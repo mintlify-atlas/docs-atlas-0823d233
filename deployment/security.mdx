@@ -1,0 +1,218 @@
+---
+title: "Cody Assistant Security Controls and Data Practices"
+sidebarTitle: "Security"
+description: "Cody hardens its Electron renderer with sandbox, CSP, and context isolation. All data stays local in %APPDATA%. The only outbound network call is the optional AI provider."
+---
+
+Cody Assistant is designed from the ground up as a local-first Windows application. Every security control described here is implemented in the current codebase — from Electron renderer sandboxing and IPC validation to atomic data writes and automatic daily backups. The only optional outbound network connection is the AI classification provider you configure; Outlook sync is 100% local via COM automation with no cloud credentials.
+
+## Electron Renderer Hardening
+
+Both Electron windows — the assistant panel and the pet window — are created with the strictest possible renderer settings:
+
+```typescript electron/main/index.ts
+webPreferences: {
+  sandbox: true,
+  contextIsolation: true,
+  nodeIntegration: false
+}
+```
+
+- **`sandbox: true`** — Chromium sandbox is active; the renderer cannot access Node.js APIs directly
+- **`contextIsolation: true`** — the preload script and the page script run in separate V8 contexts, preventing prototype pollution
+- **`nodeIntegration: false`** — the renderer has no direct access to Node.js modules
+
+All navigation outside the application is blocked. HTTPS links open in the system browser:
+
+```typescript electron/main/index.ts
+window.webContents.setWindowOpenHandler(({ url }) => {
+  if (/^https:\/\//i.test(url)) void shell.openExternal(url)
+  return { action: 'deny' }
+})
+window.webContents.on('will-navigate', (event, url) => {
+  const current = window.webContents.getURL()
+  if (url !== current) {
+    event.preventDefault()
+    if (/^https:\/\//i.test(url)) void shell.openExternal(url)
+  }
+})
+```
+
+Browser permission requests (camera, microphone, geolocation, notifications, etc.) are denied by default.
+
+## IPC Security
+
+Every IPC handler verifies that the call originates from a Cody-owned window before processing:
+
+```typescript electron/main/index.ts
+function isTrustedSender(event: Electron.IpcMainInvokeEvent): boolean {
+  return (
+    event.sender === assistantWindow?.webContents ||
+    event.sender === petWindow?.webContents
+  )
+}
+```
+
+Handlers that fail this check return `false` or `null` immediately without executing any logic. This prevents injected content or external pages from invoking Cody's IPC surface.
+
+## Input Sanitization
+
+Sensitive IPC inputs are normalized through `cleanText()` before use:
+
+```typescript electron/main/index.ts
+const cleanText = (value: unknown, maxLength: number): string =>
+  String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength)
+```
+
+| Input type | Max length constant | Value |
+|---|---|---|
+| Reminder title/body | `MAX_REMINDER_TEXT` | 240 characters |
+| Notification title/body | `MAX_NOTIFICATION_TEXT` | 180 characters |
+| Reminder ID | (inline) | 120 characters |
+| External URL | (inline) | 2 048 characters |
+
+Export filenames are sanitized with `safeFileName()` to strip path-traversal characters (`< > : " / \ | ? *` and control chars) and limit length to 120 characters.
+
+External URLs are only passed to `shell.openExternal()` if they start with `https://`. All other URL schemes are silently dropped.
+
+## Data Storage
+
+All application data is stored exclusively on the user's machine:
+
+```text
+%APPDATA%/cody-desktop-assistant/
+  cody-data.json           # Primary data file (AppState)
+  cody-data.backup.json    # Daily backup (rotated once per day)
+  startup.log              # Startup and error log
+```
+
+<Note>
+No data is ever sent to Cody-operated servers. The only network connection Cody makes is the optional AI provider you configure in Settings.
+</Note>
+
+### Atomic writes
+
+Data is never written directly to `cody-data.json`. Instead, Cody writes to a temporary file first and renames it atomically:
+
+```typescript electron/main/index.ts
+await fs.writeFile(temporary, serialized, 'utf8')
+await fs.rename(temporary, target)
+```
+
+This prevents corruption if the process is interrupted mid-write.
+
+### Automatic daily backup
+
+Once per day, before any save, Cody copies `cody-data.json` to `cody-data.backup.json`. If the primary data file becomes corrupted or unreadable, Cody automatically falls back to the backup on the next load:
+
+```typescript electron/main/index.ts
+async function loadData(): Promise<unknown | null> {
+  try {
+    return JSON.parse(await fs.readFile(dataPath(), 'utf8'))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    const backup = await readJsonFile(backupPath())
+    if (backup) startupLog('loaded backup data after primary data failure')
+    return backup
+  }
+}
+```
+
+### Size limits
+
+| Limit | Constant | Value |
+|---|---|---|
+| Primary data file | `MAX_DATA_BYTES` | 5 MB |
+| Export files | `MAX_EXPORT_BYTES` | 10 MB |
+
+Saves that would exceed 5 MB are rejected with an error before writing.
+
+## Network Isolation
+
+<Note>
+Cody's only outbound network connection is the AI classification provider — and only if you configure one. Outlook sync is entirely local via COM automation; no data leaves the machine during sync.
+</Note>
+
+| Connection | Required | Description |
+|---|---|---|
+| Outlook Classic COM | Local only | PowerShell reads email/calendar on the local machine |
+| Azure OpenAI | Optional | Only email subject + sender sent; body stays local |
+| OpenAI | Optional | Only email subject + sender sent; body stays local |
+| Cody servers | Never | No telemetry, analytics, or remote logging |
+
+## Sensitive Data — What Must Never Be Committed
+
+<Warning>
+The following must never be added to the repository or any shared location:
+
+- API keys (AI provider keys)
+- `.env` files of any kind
+- `%APPDATA%/cody-desktop-assistant/` data files
+- Screenshots or recordings containing real emails, tasks, or personal information
+</Warning>
+
+The installer is configured with `deleteAppDataOnUninstall: false` — uninstalling Cody does not delete user data. To fully remove all data, manually delete `%APPDATA%/cody-desktop-assistant/`.
+
+## Diagnostics Export
+
+The `exportDiagnostics()` function generates a report containing only metadata — no task content, no email subjects, no API keys:
+
+```typescript
+{
+  generatedAt: "2025-01-01T12:00:00.000Z",
+  app: { name, version, packaged, userData },
+  runtime: { platform, arch, electron, chrome, node },
+  windows: { assistantVisible, petVisible },
+  dataFiles: { /* sizes and timestamps only */ },
+  data: {
+    available: true,
+    tasks: 42,           // count only
+    suggestions: 3,      // count only
+    meetings: 5,         // count only
+    categories: 7,       // count only
+    hasOutlookAccount: true,
+    hasAiProvider: true,
+    hasAiKey: true,      // boolean, not the key
+    petVariant: "bunny",
+    autoSyncMinutes: 10,
+    launchAtLogin: false
+  }
+}
+```
+
+## Pre-Production Security Checklist
+
+Before distributing to a wider audience or selling to enterprise customers:
+
+<Accordion title="Code signing">
+Sign the installer with a corporate code-signing certificate. Without signing, Windows SmartScreen shows an "unknown publisher" warning, and Windows 11 Smart App Control may block the installer entirely. Once signed with a trusted certificate, neither SmartScreen nor SAC interfere.
+</Accordion>
+
+<Accordion title="Dependency audit">
+Run a Software Composition Analysis (SCA) scan on all npm dependencies using a tool approved by your IT security team. Review any high or critical CVEs before distributing.
+</Accordion>
+
+<Accordion title="Clean machine test">
+Test the installer on a fresh Windows machine with no prior Cody installation. Verify that install, all core features, and uninstall all work correctly. Confirm that uninstall does not delete `%APPDATA%/cody-desktop-assistant/` without user consent.
+</Accordion>
+
+<Accordion title="Azure OpenAI approval">
+If enabling AI classification with Azure OpenAI, confirm with IT whether a formal data-processing agreement or approval is required before connecting to the corporate Azure tenant.
+</Accordion>
+
+<Accordion title="Incident reporting">
+Define a process for reporting vulnerabilities. For internal pilots, direct reports to the project owner — do not open public GitHub issues with sensitive information.
+</Accordion>
+
+<CardGroup cols={2}>
+  <Card title="Privacy Policy" icon="shield-halved" href="/reference/privacy">
+    Detailed breakdown of what data Cody stores and what leaves the machine
+  </Card>
+  <Card title="Enterprise Deployment" icon="building" href="/deployment/enterprise">
+    Pilot readiness, code signing, and Microsoft Store distribution
+  </Card>
+</CardGroup>

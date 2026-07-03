@@ -1,0 +1,102 @@
+---
+title: "Task and Meeting Reminders with Windows Notifications"
+sidebarTitle: "Reminders"
+description: "Cody schedules staggered Windows native notifications for tasks and meetings, with configurable advance notice and automatic retry for missed reminders."
+---
+
+Cody integrates with the Windows notification system via Electron's `Notification` API to deliver timely, native pop-up reminders for both tasks and meetings. Reminders are scheduled in advance, survive app restarts within the same session, and are automatically suppressed when Focus Mode is active — keeping you in the zone when you need it most.
+
+## The Reminder Interface
+
+Every reminder Cody schedules is represented as a `Reminder` object:
+
+```typescript
+export interface Reminder {
+  id: string      // Unique identifier; meeting reminders use the prefix "meeting-"
+  title: string   // Notification headline (max 240 characters)
+  body: string    // Notification body text (max 240 characters)
+  at: string      // ISO 8601 timestamp for when the notification should fire
+  url?: string    // Optional https:// URL; adds a "Join Teams" action button on Windows
+}
+```
+
+<Note>
+  Both `title` and `body` are sanitized by `cleanText()` before being passed to the OS. Control characters are stripped, whitespace is collapsed, and the string is clamped to **240 characters**. Inputs that exceed this limit are truncated silently.
+</Note>
+
+## Scheduling and Cancelling Reminders
+
+The `desktop` bridge exposed to the renderer provides two methods for working with reminders:
+
+```typescript
+// Schedule a reminder to fire at reminder.at
+scheduleReminder(reminder: Reminder): Promise<boolean>
+
+// Cancel a previously scheduled reminder by its id
+cancelReminder(id: string): Promise<boolean>
+```
+
+`scheduleReminder` returns `true` if the timer was registered successfully and `false` if the scheduled time is already in the past. `cancelReminder` clears the timer and removes the reminder from the internal map, returning `true` in all cases.
+
+## Large-Delay Timer Splitting
+
+JavaScript's `setTimeout` has a maximum value of approximately **2,147,483,647 ms** (≈ 24.8 days). For reminders scheduled further in the future — such as the "1 day before" reminder for a meeting booked weeks out — Cody uses the constant:
+
+```typescript
+const MAX_TIMEOUT = 2_147_000_000 // ms (~24.8 days)
+```
+
+When the delay to a reminder's `at` time exceeds `MAX_TIMEOUT`, Cody sets a timer for exactly `MAX_TIMEOUT` ms. When that timer fires, it re-evaluates the remaining delay and schedules the next leg. This chaining continues until the final timer fires the actual notification, ensuring no long-range reminder is silently lost.
+
+## Staggered Meeting Reminders
+
+Meetings receive four notifications, each giving you progressively shorter lead time to prepare or join:
+
+| Notification | Timing | Purpose |
+|---|---|---|
+| Day-before alert | 24 hours before `startsAt` | Block preparation time on your calendar |
+| One-hour warning | 60 minutes before `startsAt` | Finish current work, gather materials |
+| 15-minute heads-up | 15 minutes before `startsAt` | Wrap up and navigate to meeting or link |
+| Start alert | At exact `startsAt` | Meeting is beginning now |
+
+When a meeting has a `joinUrl` (a Microsoft Teams link extracted from the Outlook calendar item body), all four notifications include a **"Join Teams"** action button rendered directly in the Windows toast notification. Clicking it opens the meeting link in the default browser without opening Cody.
+
+## Task Reminders
+
+For tasks with a `dueAt` date, Cody schedules a single reminder a configurable number of minutes before the deadline. This is controlled by the `reminderMinutes` field in `AppSettings`:
+
+```typescript
+export interface AppSettings {
+  // ...other fields
+  reminderMinutes: number  // Minutes before task due date to fire reminder. Default: 30
+}
+```
+
+A value of `30` means a task due at 3:00 PM will trigger a notification at 2:30 PM. You can adjust this in **Settings → Reminders**.
+
+## Focus Mode Suppression
+
+<Note>
+  When Focus Mode is active, Cody suppresses all task reminders to keep you uninterrupted. Meeting reminders are **always** delivered in `focus` mode. In `dnd` (Do Not Disturb) mode, **all** reminders including meetings are suppressed. When Focus Mode ends, Cody shows a summary notification telling you how many notifications were silenced.
+</Note>
+
+The suppression logic in `scheduleReminder` checks `focusState` at the moment a timer fires:
+
+```typescript
+// Reminders are checked against focusState at fire time, not at schedule time.
+// If focusState is active and the reminder is not a meeting (id starts with "meeting-"),
+// the notification is suppressed and suppressedCount is incremented.
+```
+
+This means reminders scheduled before Focus Mode was activated are still evaluated correctly — if Focus Mode has ended by the time the timer fires, the notification is delivered normally.
+
+## Preload API Reference
+
+The full reminder API available in the renderer:
+
+```typescript
+window.desktop.scheduleReminder(reminder: Reminder): Promise<boolean>
+window.desktop.cancelReminder(id: string): Promise<boolean>
+```
+
+Both calls are validated by the main process to ensure they originate from a trusted application window. Reminder objects with missing `id`, missing `title`, or an invalid `at` timestamp are rejected and return `false`.

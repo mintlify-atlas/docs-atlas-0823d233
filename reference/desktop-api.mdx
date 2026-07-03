@@ -1,0 +1,524 @@
+---
+title: "window.desktop API Reference for Cody Renderer"
+sidebarTitle: "Desktop API"
+description: "Complete reference for the window.desktop bridge API exposed by the Electron preload script — methods for data, reminders, notifications, window control, Outlook sync, and focus."
+---
+
+The `window.desktop` object is the **contextBridge API** that Cody's Electron preload script (`electron/preload/index.ts`) exposes to every renderer window. Because Cody's `BrowserWindow` instances run with `sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false`, this bridge is the **only** way a renderer can communicate with the main process. Every method on `window.desktop` returns a `Promise` that resolves once the corresponding `ipcRenderer.invoke` call settles in the main process.
+
+<Note>
+  TypeScript users can augment the global `Window` interface to get full type
+  safety. Import the types from `src/types.ts` and declare
+  `window.desktop` with the shape documented below.
+</Note>
+
+---
+
+## Data
+
+Methods for loading and persisting the entire application state to disk.
+
+### `loadData`
+
+```typescript
+window.desktop.loadData(): Promise<AppState | null>
+```
+
+Loads the persisted `AppState` from `cody-data.json` in the Electron `userData` directory. If the primary file is missing or corrupt, the main process automatically falls back to the daily backup (`cody-data.backup.json`). Returns `null` when no data exists yet (first launch).
+
+**Returns:** `Promise<AppState | null>`
+
+---
+
+### `saveData`
+
+```typescript
+window.desktop.saveData(data: AppState): Promise<boolean>
+```
+
+Persists the full `AppState` to disk using an atomic write (write to a `.tmp` file then rename). Before writing, the main process takes a once-per-day backup of the previous file.
+
+<ParamField body="data" type="AppState" required>
+  The complete application state to persist. The serialized JSON must not
+  exceed **5 MB** — the main process rejects larger payloads with an error.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `true` on success; throws on size-limit violations.
+
+<Warning>
+  Calls that would produce a file larger than 5 MB throw an `Error`. Wrap
+  `saveData` in a `try/catch` and surface the error to the user.
+</Warning>
+
+---
+
+## Notifications & Reminders
+
+Methods for showing native Windows notifications and scheduling future alerts.
+
+### `notify`
+
+```typescript
+window.desktop.notify(title: string, body: string): Promise<boolean>
+```
+
+Sends a native Windows notification immediately via Electron's `Notification` API.
+
+<ParamField body="title" type="string" required>
+  Notification title. Truncated to 180 characters; control characters are
+  stripped.
+</ParamField>
+
+<ParamField body="body" type="string" required>
+  Notification body text. Same 180-character limit and sanitization as
+  `title`.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `false` if the platform does not support notifications.
+
+<Note>
+  Notifications are **not** suppressed in `focus` mode — only `dnd` mode
+  suppresses them. See [`setFocus`](#setfocus) for details.
+</Note>
+
+---
+
+### `scheduleReminder`
+
+```typescript
+window.desktop.scheduleReminder(reminder: Reminder): Promise<boolean>
+```
+
+Schedules a native notification to fire at the time specified in `reminder.at`. If a reminder with the same `id` already exists, the previous timer is cancelled and replaced.
+
+<ParamField body="reminder" type="Reminder" required>
+  The reminder to schedule. See the [`Reminder`](/reference/data-types#reminder)
+  type for the full field list. The `at` field must be a valid ISO 8601
+  date-time string in the future; past reminders return `false` immediately.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `true` if the timer was registered, `false` if the target time is already past or the payload failed validation.
+
+<Tip>
+  Reminders whose `id` starts with `meeting-` are treated as meeting
+  reminders and are **not** suppressed in `focus` mode — only `dnd` mode
+  suppresses them.
+</Tip>
+
+---
+
+### `cancelReminder`
+
+```typescript
+window.desktop.cancelReminder(id: string): Promise<boolean>
+```
+
+Cancels a previously scheduled reminder and clears its timer.
+
+<ParamField body="id" type="string" required>
+  The unique reminder ID to cancel. Truncated to 120 characters.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — always `true` for trusted senders, even if no reminder with that ID was found.
+
+---
+
+## Window Control
+
+Methods for managing the assistant and pet windows from renderer code.
+
+### `openAssistant`
+
+```typescript
+window.desktop.openAssistant(): Promise<boolean>
+```
+
+Shows (and focuses) the main assistant `BrowserWindow`. Hides the pet window. If the assistant window does not yet exist it is created first.
+
+**Returns:** `Promise<boolean>`
+
+---
+
+### `showPet`
+
+```typescript
+window.desktop.showPet(): Promise<boolean>
+```
+
+Hides the assistant window and shows the floating pet window. The pet is clamped to the nearest display's work area.
+
+**Returns:** `Promise<boolean>`
+
+---
+
+### `minimizeWindow`
+
+```typescript
+window.desktop.minimizeWindow(): Promise<boolean>
+```
+
+Minimizes the assistant window. When the window is minimized the `minimize` event fires and Cody automatically transitions back to the pet view.
+
+**Returns:** `Promise<boolean>`
+
+---
+
+### `toggleMaximizeWindow`
+
+```typescript
+window.desktop.toggleMaximizeWindow(): Promise<boolean>
+```
+
+Maximizes the assistant window if it is currently in the normal state, or restores it to normal size if it is already maximized.
+
+**Returns:** `Promise<boolean>` — `false` if the assistant window does not exist.
+
+---
+
+### `closeWindow`
+
+```typescript
+window.desktop.closeWindow(): Promise<boolean>
+```
+
+Closes the assistant window. Because `isQuitting` is `false` during normal use, the `close` event is intercepted and the window transitions to the pet view rather than destroying itself.
+
+**Returns:** `Promise<boolean>`
+
+---
+
+### `openExternal`
+
+```typescript
+window.desktop.openExternal(url: string): Promise<boolean>
+```
+
+Opens a URL in the user's default system browser via `shell.openExternal`.
+
+<ParamField body="url" type="string" required>
+  The URL to open. **Must begin with `https://`** — any other scheme is
+  rejected and the method returns `false`.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `false` if the URL does not pass the `https://` check.
+
+<Warning>
+  Only HTTPS URLs are accepted. HTTP, `file://`, `javascript:`, and all
+  other schemes are silently blocked.
+</Warning>
+
+---
+
+## Pet Control
+
+Methods for controlling the desktop pet widget — its context menu, drag behavior, and live state updates.
+
+### `showPetMenu`
+
+```typescript
+window.desktop.showPetMenu(): Promise<boolean>
+```
+
+Displays the pet's native context menu. The menu includes options to open Cody, start Focus / DND modes (or deactivate the current one), and quit the application.
+
+**Returns:** `Promise<boolean>`
+
+---
+
+### `startPetDrag`
+
+```typescript
+window.desktop.startPetDrag(): Promise<boolean>
+```
+
+Begins a drag session for the pet window. Records the cursor start position and the pet's current bounds. A 16 ms polling interval is started to track cursor movement.
+
+**Returns:** `Promise<boolean>` — only callable from the pet window; returns `false` from the assistant window.
+
+---
+
+### `movePetDrag`
+
+```typescript
+window.desktop.movePetDrag(): Promise<boolean>
+```
+
+Delivers an intermediate drag position update. Moves the pet window to follow the cursor, clamped to the display's work area with a small edge overhang allowance.
+
+**Returns:** `Promise<boolean>` — `false` if no drag session is active or the call did not originate from the pet window.
+
+---
+
+### `endPetDrag`
+
+```typescript
+window.desktop.endPetDrag(): Promise<boolean>
+```
+
+Ends the active drag session, stops the polling interval, performs a final position update, and clamps the pet within the work area.
+
+**Returns:** `Promise<boolean>` — resolves to `true` if the pet actually moved during the drag, `false` if the pointer never travelled far enough to be considered a drag (e.g. a click).
+
+---
+
+### `petUpdate`
+
+```typescript
+window.desktop.petUpdate(payload: PetUpdate): Promise<boolean>
+```
+
+Pushes a [`PetUpdate`](/reference/data-types#petupdate) from the assistant window to the pet window. The main process forwards the payload via `petWindow.webContents.send('pet-update', payload)`.
+
+<ParamField body="payload" type="PetUpdate" required>
+  Either a `{ type: 'state' }` mood/badge update or a `{ type: 'celebrate' }`
+  celebratory animation trigger. See
+  [`PetUpdate`](/reference/data-types#petupdate).
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `false` if the call does not originate from the assistant window (this channel is one-directional: assistant → pet).
+
+---
+
+## Outlook Sync
+
+### `syncOutlookClassic`
+
+```typescript
+window.desktop.syncOutlookClassic(options?: { ai?: AiConfig }): Promise<OutlookSyncResult>
+```
+
+Triggers a full Outlook Classic COM synchronization. The main process dynamically imports `electron/main/outlook` and spawns a PowerShell script that reads the user's calendar and inbox via the Outlook COM API. When an `AiConfig` is provided the sync pipeline runs AI classification on the inbox items.
+
+<ParamField body="options" type="object">
+  Optional configuration object.
+  <Expandable title="options fields">
+    <ParamField body="options.ai" type="AiConfig">
+      AI provider configuration for email classification. When omitted,
+      emails are imported without AI-generated categorization. See
+      [`AiConfig`](/reference/data-types#aiconfig).
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+**Returns:** `Promise<OutlookSyncResult>` — see [`OutlookSyncResult`](/reference/data-types#outlooksynresult).
+
+<Note>
+  This method is only meaningful on Windows with Outlook Classic (COM)
+  installed. It throws `Error('Origen no autorizado')` if called from an
+  untrusted sender.
+</Note>
+
+---
+
+## File Operations
+
+### `exportFile`
+
+```typescript
+window.desktop.exportFile(defaultName: string, content: string): Promise<string | null>
+```
+
+Opens the native Save File dialog pre-populated with `defaultName` and writes `content` to the path the user selects.
+
+<ParamField body="defaultName" type="string" required>
+  Suggested filename shown in the Save dialog. Path-traversal characters
+  (`<>:"/\|?*` and control chars) are stripped via `safeFileName()` and the
+  result is capped at 120 characters.
+</ParamField>
+
+<ParamField body="content" type="string" required>
+  Text content to write. Must not exceed **10 MB** in UTF-8 encoded size;
+  larger payloads return `null` without opening the dialog.
+</ParamField>
+
+**Returns:** `Promise<string | null>` — the absolute file path written, or `null` if the user cancelled or the content exceeded the size limit.
+
+---
+
+### `exportDiagnostics`
+
+```typescript
+window.desktop.exportDiagnostics(): Promise<string | null>
+```
+
+Builds a diagnostics report and opens the native Save File dialog so the user can store it. The report includes app version, runtime versions (Electron, Chrome, Node.js), window visibility, data file sizes and timestamps, focus state, and a data summary. **No sensitive data** (API keys, email content, task text) is included.
+
+**Returns:** `Promise<string | null>` — the absolute path of the saved file, or `null` if the user cancelled.
+
+---
+
+## App Info
+
+### `getAppVersion`
+
+```typescript
+window.desktop.getAppVersion(): Promise<string>
+```
+
+Returns the application version string as defined in `package.json` (via `app.getVersion()`).
+
+**Returns:** `Promise<string>` — e.g. `"1.3.0"`.
+
+---
+
+### `setLaunchAtLogin`
+
+```typescript
+window.desktop.setLaunchAtLogin(enabled: boolean): Promise<boolean>
+```
+
+Adds or removes Cody from the Windows startup programs list via Electron's `app.setLoginItemSettings`.
+
+<ParamField body="enabled" type="boolean" required>
+  `true` to register Cody to start with Windows; `false` to remove the
+  startup entry.
+</ParamField>
+
+**Returns:** `Promise<boolean>` — `false` in development builds (where the binary path would point to `electron.exe` rather than the installed app).
+
+<Note>
+  This method always returns `false` in unpackaged development builds.
+  It only takes effect in a production build installed via the installer.
+</Note>
+
+---
+
+## Focus Mode
+
+Methods for activating, deactivating, and querying Cody's Focus and Do Not Disturb modes.
+
+### `setFocus`
+
+```typescript
+window.desktop.setFocus(mode: FocusMode | null, minutes: number): Promise<boolean>
+```
+
+Activates a focus session for the given duration, or deactivates the current session when `mode` is `null`.
+
+<ParamField body="mode" type="FocusMode | null" required>
+  The focus mode to activate — `'focus'` or `'dnd'` — or `null` to
+  deactivate. See [`FocusMode`](/reference/data-types#focusmode).
+</ParamField>
+
+<ParamField body="minutes" type="number" required>
+  Duration in minutes. Clamped to the range **1–480**. Ignored when
+  `mode` is `null`.
+</ParamField>
+
+**Returns:** `Promise<boolean>`
+
+<Accordion title="Focus vs DND behaviour">
+  | Mode | Non-meeting reminders | Meeting reminders | Ad-hoc notifications |
+  |---|---|---|---|
+  | `focus` | Suppressed | Delivered | Delivered |
+  | `dnd` | Suppressed | Suppressed | Suppressed |
+
+  When focus ends, a summary notification shows how many notifications were
+  suppressed while the session was active.
+</Accordion>
+
+---
+
+### `getFocus`
+
+```typescript
+window.desktop.getFocus(): Promise<FocusState | null>
+```
+
+Returns the current focus state.
+
+**Returns:** `Promise<FocusState | null>` — a [`FocusState`](/reference/data-types#focusstate) object when a session is active, or `null` when no focus session is running.
+
+---
+
+## Event Subscriptions
+
+These methods register listeners for events broadcast from the main process. Each returns an **unsubscribe function** — call it to remove the listener and avoid memory leaks.
+
+### `onShortcut`
+
+```typescript
+window.desktop.onShortcut(callback: (action: string) => void): () => void
+```
+
+Fires whenever the user triggers a registered global keyboard shortcut that targets the renderer. The `action` string identifies the shortcut:
+
+| Action | Shortcut | Description |
+|---|---|---|
+| `"new-task"` | `Win+Shift+T` | Quick-add a new task |
+| `"sync"` | `Win+Shift+S` | Trigger an Outlook sync |
+
+<ParamField body="callback" type="(action: string) => void" required>
+  Called with the shortcut action string each time a hotkey fires.
+</ParamField>
+
+**Returns:** `() => void` — call to unsubscribe.
+
+```typescript
+const unsubscribe = window.desktop.onShortcut((action) => {
+  console.log('Shortcut triggered:', action)
+})
+
+// Later, to remove the listener:
+unsubscribe()
+```
+
+---
+
+### `onFocusChanged`
+
+```typescript
+window.desktop.onFocusChanged(callback: (state: FocusState | null) => void): () => void
+```
+
+Fires whenever the focus state changes — either because a new session started, or because one ended (naturally via the timer, or manually via `setFocus(null, 0)`).
+
+<ParamField body="callback" type="(state: FocusState | null) => void" required>
+  Called with the new [`FocusState`](/reference/data-types#focusstate), or
+  `null` when focus ends.
+</ParamField>
+
+**Returns:** `() => void` — call to unsubscribe.
+
+```typescript
+const unsubscribe = window.desktop.onFocusChanged((state) => {
+  if (state) {
+    console.log(`Focus active: ${state.mode} until ${state.until}`)
+  } else {
+    console.log('Focus ended')
+  }
+})
+
+// Later, to remove the listener:
+unsubscribe()
+```
+
+---
+
+### `onPetUpdate`
+
+```typescript
+window.desktop.onPetUpdate(callback: (payload: PetUpdate) => void): () => void
+```
+
+Fires in the **pet window** when the assistant window sends a [`PetUpdate`](/reference/data-types#petupdate) via `petUpdate()`. Use this in the pet renderer to react to mood changes and celebration triggers.
+
+<ParamField body="callback" type="(payload: PetUpdate) => void" required>
+  Called with the [`PetUpdate`](/reference/data-types#petupdate) payload each
+  time the assistant pushes an update.
+</ParamField>
+
+**Returns:** `() => void` — call to unsubscribe.
+
+```typescript
+const unsubscribe = window.desktop.onPetUpdate((payload) => {
+  if (payload.type === 'state') {
+    console.log(`Pet mood: ${payload.mood}, urgent tasks: ${payload.urgent}`)
+  } else if (payload.type === 'celebrate') {
+    console.log('Celebration triggered!')
+  }
+})
+
+// Later, to remove the listener:
+unsubscribe()
+```

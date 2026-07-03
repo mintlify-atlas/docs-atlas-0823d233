@@ -1,0 +1,127 @@
+---
+title: "Global Keyboard Shortcuts for Cody Assistant"
+sidebarTitle: "Keyboard Shortcuts"
+description: "Cody registers four global Windows keyboard shortcuts that work even when the assistant panel is minimized or hidden."
+---
+
+Cody registers four global keyboard shortcuts with Windows when the application starts. Unlike regular hotkeys, these shortcuts fire **system-wide** — you do not need to click into Cody first. They work whether the full assistant panel is open, minimized, or hidden behind the floating pet widget.
+
+<Note>
+  Shortcuts are registered on app startup via Electron's `globalShortcut` module and automatically unregistered when Cody quits (`app.on('will-quit', () => globalShortcut.unregisterAll())`). If another application has already claimed one of these combinations, Cody logs a warning to `startup.log` and that specific shortcut silently does nothing.
+</Note>
+
+## Shortcut reference
+
+| Shortcut | Action string | Description |
+|---|---|---|
+| `Win + Shift + C` | `toggle` | Open the Cody assistant panel, or close it back to the pet widget if it is already focused |
+| `Win + Shift + T` | `quick-task` | Bring Cody to the foreground and immediately open the quick task creation dialog |
+| `Win + Shift + S` | `sync` | Force an immediate Outlook sync without opening the full panel |
+| `Win + Shift + F` | `focus` | Toggle Focus Mode on or off — starts a 25-minute focus session if none is active, ends the current session if one is running |
+
+## How shortcuts work
+
+Each shortcut is registered in `electron/main/index.ts` and follows one of two paths:
+
+1. **Window shortcuts** (`Win+Shift+C`, `Win+Shift+F`): handled entirely in the main process — no IPC message is sent to the renderer.
+2. **Renderer shortcuts** (`Win+Shift+T`, `Win+Shift+S`): the main process sends a `shortcut` IPC event to the assistant window's `webContents`, carrying an action string. The renderer reacts without any round-trip delay.
+
+```typescript
+// electron/main/index.ts (simplified)
+function registerGlobalShortcuts(): void {
+  const shortcuts: Array<[string, () => void]> = [
+    [
+      'Super+Shift+C',
+      () => {
+        if (assistantWindow?.isVisible() && assistantWindow.isFocused()) {
+          showPet()      // collapse back to pet widget
+        } else {
+          showAssistant() // bring panel to foreground
+        }
+      }
+    ],
+    [
+      'Super+Shift+T',
+      () => {
+        showAssistant()
+        sendShortcut('new-task') // IPC → renderer
+      }
+    ],
+    ['Super+Shift+S', () => sendShortcut('sync')],   // IPC → renderer
+    [
+      'Super+Shift+F',
+      () => {
+        if (focusState) {
+          endFocus(false)        // stop current session
+        } else {
+          startFocus('focus', 25) // start 25-min session
+        }
+      }
+    ]
+  ]
+  shortcuts.forEach(([accelerator, handler]) => {
+    globalShortcut.register(accelerator, handler)
+  })
+}
+```
+
+## Listening for shortcuts in the renderer
+
+The preload layer exposes a typed `onShortcut` subscription via `window.desktop`. Register a callback once — for example inside a `useEffect` in your root component — and dispose it on unmount:
+
+```typescript
+import { useEffect } from 'react'
+
+useEffect(() => {
+  const unsubscribe = window.desktop.onShortcut((action) => {
+    if (action === 'toggle') {
+      // Win+Shift+C: open or close the assistant panel
+      // (handled in main process; renderer receives this for awareness only)
+    }
+    if (action === 'new-task') {
+      // Win+Shift+T: open the quick task creation dialog
+      setQuickTaskOpen(true)
+    }
+    if (action === 'sync') {
+      // Win+Shift+S: trigger an immediate Outlook sync
+      void triggerOutlookSync()
+    }
+    if (action === 'focus') {
+      // Win+Shift+F: handled in main process; renderer receives this for UI update
+    }
+  })
+
+  // Remove the listener when the component unmounts
+  return unsubscribe
+}, [])
+```
+
+The `onShortcut` function is defined in `electron/preload/index.ts`:
+
+```typescript
+onShortcut: (callback: (action: string) => void): (() => void) =>
+  subscribe('shortcut', callback),
+```
+
+Calling the returned function removes the IPC listener, preventing memory leaks when navigating between views.
+
+## Shortcut behaviour details
+
+<CardGroup cols={2}>
+  <Card title="Win + Shift + C" icon="panel-left">
+    **Toggle panel.** If the assistant window is visible **and** focused, it hides and the pet widget returns. If the panel is hidden or minimized, it opens and takes focus. Useful for a quick peek and dismiss.
+  </Card>
+  <Card title="Win + Shift + T" icon="plus">
+    **Quick task.** Cody opens and immediately pops the task creation dialog. Designed for zero-friction capture — press, type the task, press Enter, and go back to what you were doing.
+  </Card>
+  <Card title="Win + Shift + S" icon="rotate">
+    **Force sync.** Triggers a fresh Outlook COM scan without opening the full panel. The sidebar "Last synced" timestamp updates after completion.
+  </Card>
+  <Card title="Win + Shift + F" icon="moon">
+    **Focus Mode.** One press starts a 25-minute focus session (suppresses non-meeting notifications). A second press ends the session early and shows how many notifications were suppressed.
+  </Card>
+</CardGroup>
+
+<Tip>
+  Use `Win + Shift + T` to capture action items while reading email or attending a meeting — Cody opens, you type the task title, press Enter, and the panel closes back to the pet. Your flow is interrupted for under five seconds and the task is saved immediately.
+</Tip>

@@ -1,0 +1,171 @@
+---
+title: "Configure Cody Assistant: Settings Reference"
+sidebarTitle: "Settings"
+description: "Complete reference for all Cody Assistant settings — pet selection, sync interval, AI provider, text size, briefing hours, and Windows startup."
+---
+
+Cody stores all user preferences in a single `AppSettings` object that is persisted alongside your tasks and meetings. Every setting has a sensible default so the app works on first launch without any configuration. The sections below describe every field, its type, default value, and where to change it inside the Cody interface.
+
+<Note>
+  Settings are persisted as part of `AppState` in a local JSON file at `%APPDATA%/cody-desktop-assistant/cody-data.json`. The file is written atomically (via a `.tmp` swap) and is never uploaded to any server. All data — including API keys — stays on your machine.
+</Note>
+
+## `AppSettings` interface
+
+The full TypeScript definition from `src/types.ts`:
+
+```typescript
+export type PetVariant = 'bunny' | 'froggo' | 'panda' | 'cow' | 'cat' | 'dog'
+export type AiProvider = 'azure' | 'openai'
+
+export interface AppSettings {
+  userName: string
+  reminderMinutes: number
+  autoSyncMinutes?: number
+  briefingsEnabled?: boolean
+  briefingHour?: number
+  closingHour?: number
+  textScale?: number
+  petVariant?: PetVariant
+  launchAtLogin?: boolean
+  onboarded?: boolean
+  aiProvider?: AiProvider
+  aiApiKey?: string
+  aiEndpoint?: string
+  aiDeployment?: string
+  outlookAccount?: string
+  lastOutlookSync?: string
+}
+```
+
+## Settings reference
+
+### Identity
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `userName` | `string` | `''` | Your name, shown in greetings and the morning briefing |
+| `onboarded` | `boolean` | `false` | Whether the first-run onboarding wizard has been completed — Cody sets this automatically after the welcome screen |
+
+<Info>
+  `userName` is displayed in the greeting header and changes based on time of day ("Good morning, Ana", "Good evening, Ana"). You set it during the welcome screen on first launch and can update it any time in **Settings → General**.
+</Info>
+
+### Reminders & sync
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `reminderMinutes` | `number` | `30` | Minutes before a task due date to fire a Windows reminder notification |
+| `autoSyncMinutes` | `number` | `10` | Outlook auto-sync interval in minutes — accepted values are `5`, `10`, or `30` |
+| `lastOutlookSync` | `string` | — | ISO 8601 timestamp of the last successful Outlook sync, displayed in the sidebar as a relative time (e.g. "3 minutes ago") |
+| `outlookAccount` | `string` | — | Outlook account name populated automatically after the first sync — used for display only |
+
+### Daily briefings
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `briefingsEnabled` | `boolean` | `true` | Enable morning briefing and end-of-day closing summary |
+| `briefingHour` | `number` | `8` | Hour in 24-hour format to trigger the morning briefing (e.g. `8` = 08:00) |
+| `closingHour` | `number` | `18` | Hour in 24-hour format to trigger the end-of-day summary (e.g. `18` = 18:00) |
+
+<Accordion title="What the briefings show">
+  **Morning briefing** (at `briefingHour`): today's meetings, your three highest-priority tasks, and a text-to-speech read-aloud option.
+
+  **Closing summary** (at `closingHour`): tasks completed vs. still pending, what's due tomorrow, and a one-click button to reschedule today's unfinished tasks to tomorrow.
+</Accordion>
+
+### Appearance
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `textScale` | `number` | `1` | Text size multiplier applied across the assistant panel |
+| `petVariant` | `PetVariant` | `'bunny'` | Pet character displayed in the floating desktop widget |
+
+**`textScale` values:**
+
+| Value | Label |
+|---|---|
+| `1` | Normal |
+| `1.15` | Large |
+| `1.3` | Very large |
+
+**`petVariant` options:**
+
+<CardGroup cols={3}>
+  <Card title="bunny" icon="rabbit">
+    Default conejito — soft pastel theme
+  </Card>
+  <Card title="froggo" icon="frog">
+    Ranita — green accent theme
+  </Card>
+  <Card title="panda" icon="circle">
+    Panda — black and white theme
+  </Card>
+  <Card title="cow" icon="cow">
+    Vaquita — warm cream theme
+  </Card>
+  <Card title="cat" icon="cat">
+    Gatito — warm orange theme
+  </Card>
+  <Card title="dog" icon="dog">
+    Perrito — earthy brown theme
+  </Card>
+</CardGroup>
+
+Each pet applies its own full visual theme — palette, accent colours, brand icon, and greeting character.
+
+### Windows integration
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `launchAtLogin` | `boolean` | `false` | Start Cody automatically when Windows starts |
+
+<Tip>
+  `launchAtLogin` calls `app.setLoginItemSettings({ openAtLogin: true })` via Electron. This only takes effect in the **packaged** build — it has no effect when running in development mode (`npm run dev`). Under MSIX or Microsoft Store packaging this mechanism requires a `StartupTask` entry in the app manifest (`Package.appxmanifest`) rather than a registry key — consult the [MSIX startup task docs](https://learn.microsoft.com/en-us/windows/apps/desktop/modernize/desktop-to-uwp-extensions#start-an-executable-file-when-users-log-into-windows) if you plan to distribute via the Store.
+</Tip>
+
+### AI classification
+
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `aiProvider` | `AiProvider` | `'azure'` | AI provider used to classify email suggestions by category |
+| `aiApiKey` | `string` | — | API key for the configured AI provider |
+| `aiEndpoint` | `string` | — | Azure OpenAI resource endpoint URL (e.g. `https://your-resource.openai.azure.com/`) |
+| `aiDeployment` | `string` | — | Azure OpenAI deployment name (e.g. `gpt-4o`) |
+
+<Accordion title="AI provider details">
+  **Azure OpenAI** (recommended for corporate use): classification requests stay within your company's Microsoft tenant and Microsoft does not use them for model training. Requires an endpoint URL, deployment name, and API key from your IT department.
+
+  **OpenAI**: uses the public OpenAI API. Requires only an API key from [platform.openai.com](https://platform.openai.com).
+
+  **No AI configured**: Cody falls back to its built-in local keyword classifier — no network connection required.
+
+  For privacy, only the email **subject** and **sender** are ever sent to the AI provider. The message body is never transmitted.
+</Accordion>
+
+## Full `AppState` structure
+
+`AppSettings` lives inside the `AppState` wrapper that is written to disk:
+
+```json
+{
+  "tasks": [],
+  "suggestions": [],
+  "categories": [],
+  "meetings": [],
+  "dismissedSuggestionIds": [],
+  "settings": {
+    "userName": "Ana",
+    "reminderMinutes": 30,
+    "autoSyncMinutes": 10,
+    "briefingsEnabled": true,
+    "briefingHour": 8,
+    "closingHour": 18,
+    "textScale": 1,
+    "petVariant": "bunny",
+    "launchAtLogin": false,
+    "onboarded": true,
+    "aiProvider": "azure"
+  }
+}
+```

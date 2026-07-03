@@ -1,0 +1,81 @@
+---
+title: "Productivity Progress Metrics and Streak Tracking"
+sidebarTitle: "Progress"
+description: "The Progress view shows a 7-day task completion chart, weekly creation vs completion counts, your current streak of productive days, and an overload alert."
+---
+
+The Progress view gives you a concise, visual snapshot of how your week is going without leaving Cody. It surfaces the data already embedded in your tasks — completion timestamps, creation dates, and urgency levels — and turns it into actionable indicators: a rolling chart, weekly totals, a streak counter, and an overload warning when your plate is getting too full.
+
+## Accessing the Progress View
+
+Open the assistant panel by clicking your pet (or pressing `Win+Shift+C`), then select the **Progress** tab from the navigation bar inside the panel. No additional setup or sync is required — the view is populated entirely from `AppState.tasks` stored locally.
+
+## 7-Day Completion Chart
+
+The chart plots the number of tasks you completed on each of the last seven days, including today. Completion is determined by the `completedAt` field on the `Task` interface:
+
+```typescript
+export interface Task {
+  // ...other fields
+  completedAt?: string  // ISO 8601 timestamp set when status changes to 'done'
+  status: TaskStatus    // 'pending' | 'done'
+}
+```
+
+Each bar in the chart represents one calendar day. A task counts for the day whose date matches the date portion of its `completedAt` timestamp, using your local timezone. Tasks completed more than seven days ago do not appear in the chart but still count toward your streak.
+
+## Weekly Stats
+
+Below the chart, two counters summarize the current calendar week (Monday through Sunday):
+
+- **Completed this week** — total tasks with a `completedAt` in the current week.
+- **Created this week** — total tasks with a `createdAt` in the current week, regardless of status.
+
+Comparing these two numbers tells you whether you are reducing your backlog (completions > creations), keeping up (roughly equal), or accumulating debt (creations outpacing completions).
+
+## Streak Tracking
+
+Your streak is the number of consecutive calendar days on which you completed at least one task. The counter resets to zero if a full day passes with no completions.
+
+<Tip>
+  Use the streak as a lightweight habit-building tool. Even on a light day, completing one small task — like filing a note or replying to a pending email suggestion from Cody — keeps your streak alive and builds momentum over time. Aim for a consistent streak rather than a high single-day count.
+</Tip>
+
+## Overload Alert
+
+<Note>
+  The overload alert appears when the number of pending tasks in `urgent` or `high` priority — including any that Cody has automatically escalated because they are overdue or due within 24 hours — exceeds an internal threshold. When the alert is shown, Cody recommends reviewing your task list and considering postponing or delegating lower-priority items.
+</Note>
+
+Cody automatically escalates task priority as due dates approach:
+
+- Tasks due within **3 days** are escalated to `high` priority.
+- Tasks due within **24 hours** are escalated to `urgent` priority.
+- Tasks past their `dueAt` date are marked as **Overdue**.
+
+The overload alert fires when the total count of urgent and high-priority pending tasks crosses the alert threshold, giving you an early signal before the situation becomes unmanageable.
+
+## Day-Status Traffic Light
+
+A color-coded indicator appears in the top bar of the assistant panel at all times, not just in the Progress view. It reflects the current state of your day at a glance:
+
+| Color | Meaning | Condition |
+|---|---|---|
+| 🟢 Green | Under control | No urgent or overdue tasks; no meetings starting within 30 minutes |
+| 🟡 Amber | Attention needed | At least one task is due today, or a meeting starts within 30 minutes |
+| 🔴 Red | Action required | At least one task is urgent or overdue |
+
+The traffic light is updated in real time as tasks change state or as meetings approach, so it always reflects your actual situation without needing a manual refresh.
+
+## Data Storage
+
+All progress data is derived from the `tasks` array in `AppState`, which is persisted locally to `%APPDATA%/cody-desktop-assistant/cody-data.json`. No data is sent to external services. A daily backup is automatically written to `cody-data.backup.json` in the same folder, so historical completion data is preserved even if the primary file is ever corrupted.
+
+<CardGroup cols={2}>
+  <Card title="Export your tasks" icon="download">
+    You can export all tasks to CSV (compatible with Excel) or back up the full app state to JSON from **Settings → Export**. This is useful for reviewing long-term trends outside of Cody.
+  </Card>
+  <Card title="Recurring task completions" icon="rotate">
+    When you complete a recurring task (daily, weekly, biweekly, or monthly), the current instance is marked `done` and a new instance is automatically created. Each completion counts individually toward your streak and weekly stats.
+  </Card>
+</CardGroup>

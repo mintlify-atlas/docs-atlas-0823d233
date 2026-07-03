@@ -1,0 +1,110 @@
+---
+title: "Cody Assistant: Desktop Productivity with a Friendly Pet"
+sidebarTitle: "Introduction"
+description: "Cody Assistant is a Windows desktop app combining an animated floating pet with task management, local Outlook Classic integration, and AI-powered email triage."
+---
+
+Cody Assistant is a Windows desktop productivity app built with Electron, React, and TypeScript. It places a friendly animated pet on your desktop that lives above all other windows, surfaces actionable tasks extracted from your Outlook Classic inbox, and keeps your meetings, deadlines, and focus sessions organized — all without ever leaving your machine or requiring a connection to Microsoft Graph.
+
+## What Problem Cody Solves
+
+Knowledge workers juggling dozens of emails, back-to-back meetings, and a long task backlog typically rely on a mix of sticky notes, manual to-do lists, and mental overhead to stay on top of everything. Cody addresses three specific pain points:
+
+- **Task overload.** Cody reads recent emails from Outlook Classic, classifies them by category and priority, and proposes discrete, actionable tasks. You accept, edit, or dismiss each suggestion — nothing is added without your approval.
+- **Email triage.** The AI triage engine (Azure OpenAI or OpenAI, both optional) evaluates each email's subject and sender to assign a category and confidence score. When confidence is low, Cody flags the suggestion for manual review rather than guessing.
+- **Meeting management.** Cody pulls your calendar from Outlook Classic, detects virtual, in-person, and hybrid meetings, surfaces Teams join links as one-click buttons, and sends escalating Windows notifications at 1 day, 1 hour, 15 minutes, and the exact start time of each meeting.
+
+Beyond the three core problems, Cody also handles priority escalation (tasks approaching their deadline are automatically promoted), recurring tasks, a Focus Mode that silences notifications for 25, 50, or 90 minutes, and a day-status traffic light in the top bar that gives you an instant read on how your day is going.
+
+## Architecture Overview
+
+Cody runs as two coordinated Electron windows sharing a single main process:
+
+1. **Pet window** — a frameless, transparent, always-on-top window that renders the animated pixel-art mascot (`src/pet.tsx`). It supports drag-and-drop repositioning, mood animations (calm, alert, worried, happy), celebration bursts on task completion, and desktop speech bubbles.
+2. **Assistant panel** — a standard browser-view window (`src/App.tsx`) containing the full task manager, inbox suggestions, meetings tab, progress view, and settings. Minimizing or closing the panel simply hides it; the pet and the background process stay alive.
+
+The two windows communicate through Electron's **IPC bridge** (`electron/preload/index.ts`), which exposes a narrow, validated API surface to the renderer. No Node.js APIs are accessible directly from the React code.
+
+Outlook Classic sync is handled entirely locally by **`electron/main/outlook.ts`**, which shells out to a PowerShell script that uses COM automation to enumerate recent emails and calendar events from the locally installed Outlook profile. There is no OAuth flow, no Azure app registration, and no network call to Microsoft's servers.
+
+```text
+electron/
+  main/
+    index.ts        Main process: windows, IPC handlers, reminders, auto-sync.
+    outlook.ts      Local Outlook Classic COM automation via PowerShell.
+  preload/
+    index.ts        Secure contextBridge API exposed to the renderer.
+
+src/
+  App.tsx           Assistant panel — tasks, inbox, meetings, settings.
+  pet.tsx           Floating pet window — drag, mood, animations.
+  pet.css           Pixel-art sprites, drag handle, Cody label.
+  styles.css        Assistant panel styles (retro theme, Cascadia Mono).
+  types.ts          Shared TypeScript interfaces (Task, Meeting, AppState…).
+  data.ts           Neutral initial state — no personal data pre-loaded.
+  wordData.ts       Area categories and base task vocabulary.
+  assets/bunny/     Sprite sheets for the default pet variant.
+
+build/
+  icon.png          Application icon used by the installer and taskbar.
+```
+
+## Key Technology Choices
+
+| Technology | Version | Role |
+|---|---|---|
+| Electron | v33 | Multi-window desktop shell, IPC, OS notifications |
+| React | 18.3 | UI rendering for both windows |
+| TypeScript | 5.7 | End-to-end type safety |
+| electron-vite | 3.0 | Fast dev server with HMR; bundles main + preload + renderer |
+| electron-builder | 26.15 | NSIS installer and portable `.exe` for Windows distribution |
+| Vite | 6.0 | Renderer bundling under electron-vite |
+| lucide-react | 0.468 | Icon set throughout the panel UI |
+
+<Note>
+  Cody uses **Outlook Classic COM automation only**. It requires no Microsoft Graph API registration, no Client ID, no Tenant ID, no Client Secret, and no Key Vault. The only outbound network calls are to the AI provider you optionally configure in Settings — the Outlook sync itself is 100% local.
+</Note>
+
+## Pet Variants
+
+During first launch (and later through Settings), each user selects one of six animated pets. The chosen variant applies a matching visual theme — palette, accent colours, brand icon, and greeting character — to the entire assistant panel.
+
+| Variant key | Pet |
+|---|---|
+| `bunny` | 🐰 Bunny (default) |
+| `froggo` | 🐸 Froggo |
+| `panda` | 🐼 Panda |
+| `cow` | 🐮 Cow |
+| `cat` | 🐱 Cat |
+| `dog` | 🐶 Dog |
+
+## Data Storage
+
+All user data — tasks, meetings, preferences, and AI API keys — is stored exclusively on the local machine:
+
+```text
+%APPDATA%/cody-desktop-assistant/cody-data.json
+```
+
+A daily automatic backup is written alongside it as `cody-data.backup.json`. If the main file is corrupted on startup, Cody attempts to recover from the backup automatically. **No personal data, no API keys, and no task content are ever committed to the repository or sent to external servers (other than the optional AI provider you configure).**
+
+## Security Posture (v0.8.0+)
+
+For corporate pilot distribution, Cody was hardened with Chromium sandboxing on all renderers, context isolation, a strict Content Security Policy, IPC input validation, and browser permission denials by default. Full details are in `SECURITY.md` and `docs/ENTERPRISE_READINESS.md` in the repository.
+
+## Where to Go Next
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Download the NSIS installer or portable executable and get Cody running on your machine in minutes.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Launch Cody, pick your pet, sync Outlook Classic, and review your first task suggestions.
+  </Card>
+  <Card title="Floating Pet" icon="face-smile" href="/features/pet">
+    Mood states, drag-and-drop positioning, speech bubbles, and choosing your pet variant.
+  </Card>
+  <Card title="Task Manager" icon="list-check" href="/features/tasks">
+    Categories, priorities, deadlines, recurrence, priority escalation, and CSV export.
+  </Card>
+</CardGroup>

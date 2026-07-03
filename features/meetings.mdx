@@ -1,0 +1,142 @@
+---
+title: "Meeting Management with Teams Links and Conflict Detection"
+sidebarTitle: "Meetings"
+description: "Cody imports calendar events from Outlook Classic, detects Teams join links, flags scheduling conflicts, and sends staggered reminders at 1 day, 1 hour, 15 minutes, and meeting start."
+---
+
+Cody imports your calendar from Outlook Classic during every sync and surfaces today's meetings directly in the assistant panel. It automatically detects how a meeting will be held — virtually via Teams, in person, or hybrid — and adds a one-click **Join Teams** button to both the panel and the Windows notification so you can enter the meeting without switching back to Outlook or searching for the link.
+
+## The `Meeting` Interface
+
+Meeting data is defined in `src/types.ts`:
+
+```typescript
+export interface Meeting {
+  id: string              // 'outlook-' + Outlook EntryID
+  title: string           // event subject
+  startsAt: string        // ISO 8601 UTC timestamp
+  endsAt?: string         // ISO 8601 UTC timestamp
+  attendees: string[]     // required attendees, split from semicolon-delimited string
+  joinUrl?: string        // Teams join URL extracted from event body
+  location?: string       // physical location (omitted when it is just "Microsoft Teams Meeting")
+  mode?: 'virtual' | 'in-person' | 'hybrid'
+}
+```
+
+---
+
+## Meeting Mode Detection
+
+Cody classifies every imported event into one of three modes by examining the `joinUrl` and `location` fields:
+
+| Mode | Condition |
+|---|---|
+| `virtual` | A Teams join URL was found and no meaningful physical location exists |
+| `in-person` | No Teams URL, and a physical location is present (or no location at all) |
+| `hybrid` | Both a Teams URL **and** a physical location are present |
+
+Location strings like *"Microsoft Teams Meeting"*, *"Reunión de Microsoft Teams"*, or *"Online"* are treated as non-locations and ignored when determining mode.
+
+```typescript
+const mode =
+  joinUrl && location
+    ? 'hybrid'
+    : joinUrl
+      ? 'virtual'
+      : 'in-person'
+```
+
+---
+
+## Teams Join URL Extraction
+
+The PowerShell COM script reads the full body of each calendar event and applies a regex to find the Teams meeting link:
+
+```powershell
+$match = [regex]::Match($body, 'https://teams\.microsoft\.com/[^\s<>"'']+')
+if ($match.Success) { $joinUrl = $match.Value }
+```
+
+The extracted URL is stored in `Meeting.joinUrl` and surfaced in two places:
+
+1. **Meetings view** — a **Join** button visible next to each virtual or hybrid meeting.
+2. **Windows toast notification** — an action button that opens the URL directly in your browser without Cody's panel needing to be open (see below).
+
+---
+
+## Staggered Reminders
+
+Cody schedules up to four notifications per meeting using the `scheduleReminder` IPC channel. Each reminder fires at a specific offset before the meeting start time:
+
+| Reminder | Offset | Notification content |
+|---|---|---|
+| Day-before | 24 hours before `startsAt` | Title + date/time summary |
+| Hour-before | 1 hour before `startsAt` | Title + start time |
+| Quarter-hour | 15 minutes before `startsAt` | Title + "starts in 15 minutes" |
+| Start | Exactly at `startsAt` | Title + Join Teams button (if virtual/hybrid) |
+
+Reminders are keyed with an ID starting with `meeting-`. This prefix is important during [Focus Mode](/features/focus-mode) — `focus` mode (timed) still lets meeting reminders through, while `dnd` (Do Not Disturb) suppresses them entirely.
+
+<Note>
+  The Windows toast notification for meetings that have a Teams URL uses the native `ToastGeneric` XML template with `activationType="protocol"`. Clicking **"Join Teams"** passes the URL directly to the OS as a protocol activation — no Cody window opens, and no Electron code runs in the critical path. This makes it safe to join from the notification even when Cody's assistant panel is hidden.
+</Note>
+
+The notification XML is constructed in `electron/main/index.ts`:
+
+```typescript
+const toastXml =
+  `<toast activationType="protocol" launch="${url}" scenario="reminder">` +
+  `<visual><binding template="ToastGeneric">` +
+  `<text>${escapeXml(reminder.title)}</text>` +
+  `<text>${escapeXml(reminder.body)}</text>` +
+  `</binding></visual>` +
+  `<actions>` +
+  `<action content="Unirme a Teams" activationType="protocol" arguments="${url}"/>` +
+  `<action content="Cerrar" activationType="system" arguments="dismiss"/>` +
+  `</actions>` +
+  `</toast>`
+new Notification({ toastXml }).show()
+```
+
+---
+
+## Conflict Detection
+
+When two or more meetings overlap in time, Cody flags them with a warning indicator in the Meetings view. An overlap is detected when `meeting A startsAt < meeting B endsAt` and `meeting B startsAt < meeting A endsAt`.
+
+Conflicting meetings are highlighted so you can reach out to organisers or reschedule before the day begins.
+
+---
+
+## Meetings View
+
+The **Meetings** tab in the assistant panel shows:
+
+<CardGroup cols={2}>
+  <Card title="Today's agenda" icon="calendar-day">
+    All events from the current calendar day, sorted by start time. Each card shows title, time range, attendees, location, and mode badge (virtual / in-person / hybrid).
+  </Card>
+  <Card title="Join button" icon="video">
+    Appears on virtual and hybrid meetings. Clicking it calls `window.desktop.openExternal(joinUrl)` to open the Teams link in the default browser.
+  </Card>
+  <Card title="Conflict warning" icon="triangle-exclamation">
+    Overlapping meetings display an amber warning badge. Hover or tap to see which event conflicts with which.
+  </Card>
+  <Card title="Attendee list" icon="users">
+    Required attendees are listed beneath the meeting title. The list is parsed from Outlook's semicolon-delimited `RequiredAttendees` string.
+  </Card>
+</CardGroup>
+
+---
+
+## Morning Briefing Integration
+
+If the morning briefing is enabled (configurable start hour in **Settings**), Cody displays today's meetings as the first section of the briefing alongside the three most important tasks. The briefing can also be read aloud via text-to-speech.
+
+---
+
+## Calendar Sync Scope
+
+Cody syncs up to **50 calendar events** within the next **14 days** per sync cycle. Events are read with `IncludeRecurrences = $true` so recurring series are fully expanded. The scan stops after examining 500 Outlook items to prevent runaway performance on large calendars.
+
+Sync is triggered automatically at the configured interval, via **Settings**, or with `Win+Shift+S`. See [Outlook Sync](/features/outlook-sync) for full details on the sync mechanism.

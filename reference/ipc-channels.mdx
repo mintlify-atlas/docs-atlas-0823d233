@@ -1,0 +1,250 @@
+---
+title: "Electron IPC Channel Reference"
+sidebarTitle: "IPC Channels"
+description: "All IPC invoke channels and event channels used between the Cody renderer and the Electron main process, with input validation rules and security constraints."
+---
+
+Cody's renderer windows are fully sandboxed (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`) and cannot access Node.js APIs directly. All communication between the renderer and the Electron main process therefore flows through two classes of IPC channel:
+
+- **Invoke channels** — the renderer calls `ipcRenderer.invoke(channel, ...args)` and awaits a response from the main process. These are two-way request/response calls exposed to renderer code via `window.desktop.*` methods.
+- **Event channels** — the main process calls `webContents.send(channel, payload)` to push a one-way notification to a renderer. These are received via `ipcRenderer.on` and are surfaced as subscription callbacks by `window.desktop.on*()` methods.
+
+<Note>
+  Renderer code should never call `ipcRenderer` directly. Use the
+  `window.desktop` bridge documented in the
+  [Desktop API reference](/reference/desktop-api). The channel names
+  listed here are for architectural documentation and debugging purposes.
+</Note>
+
+---
+
+## Security Model
+
+Before processing any invoke, every IPC handler in `electron/main/index.ts` calls the `isTrustedSender` guard:
+
+```typescript
+function isTrustedSender(event: Electron.IpcMainInvokeEvent): boolean {
+  return (
+    event.sender === assistantWindow?.webContents ||
+    event.sender === petWindow?.webContents
+  )
+}
+```
+
+Only the two Cody-owned `BrowserWindow` instances (the assistant panel and the pet widget) can invoke these channels. Requests from any other origin return `false`, `null`, or an empty string without performing any work.
+
+<Warning>
+  Several channels have **additional sender restrictions** beyond the
+  generic trusted-sender check. `pet-update` only accepts calls from the
+  assistant window. `start-pet-drag`, `move-pet-drag`, and `end-pet-drag`
+  only accept calls from the pet window. Violations return `false`
+  silently.
+</Warning>
+
+### Input sanitization
+
+All free-text inputs pass through `cleanText(value, maxLength)` before use:
+
+```typescript
+const cleanText = (value: unknown, maxLength: number): string =>
+  String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')  // strip control characters
+    .replace(/\s+/g, ' ')                     // collapse whitespace
+    .trim()
+    .slice(0, maxLength)
+```
+
+Export filenames are additionally passed through `safeFileName()`, which removes path-traversal characters (`<>:"/\|?*` and control chars) and caps the result at 120 characters.
+
+---
+
+## Invoke Channels (renderer → main)
+
+The following channels are registered with `ipcMain.handle` and are accessible to the renderer via `ipcRenderer.invoke`.
+
+| Channel | Payload | Returns | Notes |
+|---|---|---|---|
+| `load-data` | none | `AppState \| null` | Reads `cody-data.json`; falls back to `cody-data.backup.json` on read failure |
+| `save-data` | `AppState` | `boolean` | Atomic write via `.tmp` rename; throws if serialized JSON exceeds 5 MB |
+| `schedule-reminder` | `Reminder` | `boolean` | Payload normalized via `normalizeReminder()`; returns `false` for past or invalid timestamps |
+| `cancel-reminder` | `string` (id) | `boolean` | Clears the `setTimeout` for the given id; always returns `true` for trusted senders |
+| `show-notification` | `title: string, body: string` | `boolean` | Text sanitized to 180 chars; returns `false` if `Notification.isSupported()` is `false` |
+| `open-external` | `string` (url) | `boolean` | `https://` prefix enforced; all other schemes blocked |
+| `open-assistant` | none | `boolean` | Shows and focuses the assistant `BrowserWindow`; creates it if needed |
+| `show-pet` | none | `boolean` | Hides the assistant window and shows the pet widget |
+| `window-minimize` | none | `boolean` | Minimizes the assistant window; triggers transition to pet view |
+| `window-toggle-maximize` | none | `boolean` | Maximizes or unmaximizes the assistant window; returns `false` if window not present |
+| `window-close` | none | `boolean` | Closes the assistant window (intercepted → transitions to pet view) |
+| `show-pet-menu` | none | `boolean` | Displays the native context menu anchored to the pet window |
+| `start-pet-drag` | none | `boolean` | Pet window only; records cursor start position and begins 16 ms polling interval |
+| `move-pet-drag` | none | `boolean` | Pet window only; moves the window to follow the cursor |
+| `end-pet-drag` | none | `boolean` | Pet window only; stops polling, clamps pet to work area; returns whether the pet actually moved |
+| `outlook-classic-sync` | `{ ai?: AiConfig }` | `OutlookSyncResult` | Dynamically imports `./outlook` and runs COM sync; throws on unauthorized sender |
+| `export-file` | `defaultName: string, content: string` | `string \| null` | Opens Save dialog; returns absolute file path or `null` on cancel; content capped at 10 MB |
+| `export-diagnostics` | none | `string \| null` | Builds diagnostics report (no sensitive data); opens Save dialog |
+| `get-app-version` | none | `string` | Returns `app.getVersion()`; empty string on untrusted sender |
+| `set-launch-at-login` | `boolean` | `boolean` | Calls `app.setLoginItemSettings`; returns `false` in unpackaged builds |
+| `set-focus` | `mode: FocusMode \| null, minutes: number` | `boolean` | `null` mode deactivates focus; `minutes` clamped to 1–480 |
+| `get-focus` | none | `FocusState \| null` | Returns serialized `focusState` with `until` as ISO string, or `null` |
+| `pet-update` | `PetUpdate` | `boolean` | Assistant window only; forwards payload to pet window via `webContents.send` |
+
+### Channel detail notes
+
+<Accordion title="load-data — backup fallback">
+  The primary file is `cody-data.json` in Electron's `userData` directory.
+  If that file cannot be read (e.g. it is corrupt JSON or has been deleted),
+  the handler attempts to read `cody-data.backup.json`. A backup is taken
+  at most once per calendar day, just before each successful `save-data`
+  write. The backup always represents the previous day's last save.
+</Accordion>
+
+<Accordion title="save-data — atomic write and size limit">
+  Data is written to `cody-data.json.tmp` first, then atomically renamed to
+  `cody-data.json`. This prevents a partial write from corrupting the primary
+  data file. If the serialized payload would exceed **5 MB** (UTF-8 bytes), the
+  handler throws:
+
+  ```
+  Error: El archivo local de Cody excede el limite permitido.
+  ```
+
+  The renderer must catch this error and surface a user-facing message.
+</Accordion>
+
+<Accordion title="schedule-reminder — normalization and suppression">
+  Payloads are run through `normalizeReminder()` which:
+
+  1. Casts all fields to strings via `cleanText()`
+  2. Parses `at` as a `Date` — returns `null` if invalid
+  3. Strips `url` values that do not start with `https://`
+
+  When a reminder fires during an active focus session:
+
+  - `focusState.mode === 'dnd'` — all reminders suppressed
+  - `focusState.mode === 'focus'` and `reminder.id` does **not** start with `'meeting-'` — suppressed
+  - `focusState.mode === 'focus'` and `reminder.id` starts with `'meeting-'` — **delivered**
+
+  Long-duration reminders (delay > `2_147_000_000` ms ≈ 24.8 days) are
+  rescheduled recursively to work around the `setTimeout` integer limit.
+</Accordion>
+
+<Accordion title="outlook-classic-sync — deferred import">
+  The Outlook sync implementation is dynamically imported at invocation time:
+
+  ```typescript
+  const { syncOutlookClassic } = await import('./outlook')
+  return syncOutlookClassic(options)
+  ```
+
+  This keeps the COM/PowerShell code out of the main-process startup bundle
+  and avoids import-time errors on machines without Outlook installed.
+</Accordion>
+
+<Accordion title="set-launch-at-login — packaged builds only">
+  In development, `app.isPackaged` is `false`, so this handler always returns
+  `false`. In production, it calls:
+
+  ```typescript
+  app.setLoginItemSettings({ openAtLogin: enabled })
+  ```
+
+  The startup entry points to the installed executable. The renderer should
+  keep `AppSettings.launchAtLogin` in sync by reading the returned value.
+</Accordion>
+
+---
+
+## Event Channels (main → renderer)
+
+The following channels are emitted by the main process via `webContents.send`. They are surfaced to renderer code as callback subscriptions via `window.desktop.on*()`.
+
+| Channel | Payload | Target window | When fired |
+|---|---|---|---|
+| `shortcut` | `string` (action) | Assistant window | A registered global hotkey fires an action targeted at the renderer |
+| `focus-changed` | `FocusState \| null` | Assistant window | Focus mode is activated, deactivated (manually or via timer expiry) |
+| `pet-update` | `PetUpdate` | Pet window | The assistant window calls `window.desktop.petUpdate()` |
+
+### Event channel detail
+
+<Accordion title="shortcut — global hotkey actions">
+  The main process registers four global shortcuts via `globalShortcut.register`:
+
+  | Accelerator | Action sent | Effect |
+  |---|---|---|
+  | `Win+Shift+C` | _(no IPC)_ | Toggles between assistant and pet view |
+  | `Win+Shift+T` | `'new-task'` | Opens assistant and triggers quick-add task |
+  | `Win+Shift+S` | `'sync'` | Triggers an Outlook sync |
+  | `Win+Shift+F` | _(no IPC)_ | Toggles Focus 25 min on/off |
+
+  Only `Win+Shift+T` and `Win+Shift+S` emit a `shortcut` event; the other
+  two are handled entirely in the main process.
+
+  Subscribe via:
+
+  ```typescript
+  const unsubscribe = window.desktop.onShortcut((action) => {
+    if (action === 'new-task') openNewTaskDialog()
+    if (action === 'sync') triggerSync()
+  })
+  ```
+</Accordion>
+
+<Accordion title="focus-changed — state broadcast">
+  Emitted by the `broadcastFocus()` helper, which is called whenever focus
+  state changes. The payload is either a `FocusState` object:
+
+  ```typescript
+  { mode: 'focus' | 'dnd', until: '2024-11-01T10:25:00.000Z' }
+  ```
+
+  or `null` when the focus session ends. Subscribe via:
+
+  ```typescript
+  const unsubscribe = window.desktop.onFocusChanged((state) => {
+    setFocusBanner(state)
+  })
+  ```
+</Accordion>
+
+<Accordion title="pet-update — assistant to pet forwarding">
+  The `pet-update` IPC channel is used **in two directions**:
+
+  1. **Invoke (assistant → main → pet):** The assistant renderer calls
+     `window.desktop.petUpdate(payload)`, which invokes the `pet-update`
+     channel. The main-process handler forwards the payload to the pet
+     window via `petWindow.webContents.send('pet-update', payload)`.
+
+  2. **Event (main → pet renderer):** The pet renderer receives the
+     forwarded payload via `window.desktop.onPetUpdate(callback)`.
+
+  This asymmetry means the `pet-update` name appears in both the invoke
+  table and the event table but represents a single logical message flow:
+  assistant renderer → main process → pet renderer.
+</Accordion>
+
+---
+
+## Registered Global Shortcuts Reference
+
+These shortcuts are registered at startup via `globalShortcut.register` and unregistered when the app quits (`will-quit`). If another application has already claimed a shortcut, Cody logs a warning and the shortcut is silently unavailable.
+
+| Accelerator | Behaviour |
+|---|---|
+| `Win+Shift+C` | Focuses the assistant window if it is visible and focused; otherwise shows the assistant |
+| `Win+Shift+T` | Shows the assistant and sends `shortcut: 'new-task'` to the renderer |
+| `Win+Shift+S` | Sends `shortcut: 'sync'` to the renderer (does not change window focus) |
+| `Win+Shift+F` | Starts a 25-minute `focus` session, or ends the current session if one is active |
+
+---
+
+## Constants Reference
+
+The following numeric constants are defined in `electron/main/index.ts` and govern IPC validation limits.
+
+| Constant | Value | Applies to |
+|---|---|---|
+| `MAX_DATA_BYTES` | `5 * 1024 * 1024` (5 MB) | `save-data` payload size limit |
+| `MAX_EXPORT_BYTES` | `10 * 1024 * 1024` (10 MB) | `export-file` content size limit |
+| `MAX_REMINDER_TEXT` | `240` characters | Reminder `title` and `body` fields |
+| `MAX_NOTIFICATION_TEXT` | `180` characters | Ad-hoc notification `title` and `body` fields |
+| `MAX_TIMEOUT` | `2_147_000_000` ms | Maximum `setTimeout` duration before recursive rescheduling |

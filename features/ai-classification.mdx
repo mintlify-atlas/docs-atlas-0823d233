@@ -1,0 +1,150 @@
+---
+title: "AI-Powered Email Task Classification"
+sidebarTitle: "AI Classification"
+description: "Cody optionally uses Azure OpenAI or OpenAI to classify email suggestions into task categories. Only subject and sender are sent — email body content stays local."
+---
+
+When Cody reads your recent emails from Outlook, it needs to decide which messages represent actionable tasks and which category they belong to. By default this is handled by a local keyword-based classifier, but you can optionally connect an AI provider to get significantly more accurate, context-aware classification — especially useful when email subjects are ambiguous or in mixed languages.
+
+## Privacy Guarantee
+
+Before configuring AI, it is important to understand exactly what data leaves your machine:
+
+> **Only the email subject line and the sender's display name are sent to the AI provider. The email body is never transmitted.**
+
+The privacy-first design is enforced at the source in `outlook.ts`. The AI prompt is constructed exclusively from `message.subject` and `message.sender` fields — the `bodyPreview` field stays on your machine and is used only by the local classifier.
+
+<Warning>
+  Never commit your API key to version control. Cody stores keys exclusively in `%APPDATA%/cody-desktop-assistant/` on the local machine. They are never written to the project repository, never sent to Cody's own servers, and never logged.
+</Warning>
+
+## AI Providers
+
+Cody supports two providers, selectable via the `AiProvider` type:
+
+```typescript
+export type AiProvider = 'azure' | 'openai'
+```
+
+<Note>
+  **Azure OpenAI is the recommended provider for corporate use.** When your organization deploys Azure OpenAI, all API calls go to your company's own Azure tenant. Microsoft's enterprise data processing terms apply: the data is not used to train shared models and does not leave your corporate environment. This makes Azure OpenAI the right choice for sensitive business communications.
+</Note>
+
+## The AiConfig Interface
+
+```typescript
+export interface AiConfig {
+  provider: AiProvider   // 'azure' | 'openai'
+  apiKey: string         // Required for both providers
+  endpoint?: string      // Azure only: e.g. https://<resource>.openai.azure.com/
+  deployment?: string    // Azure only: the deployment name configured in Azure AI Studio
+}
+```
+
+## Configuration Steps
+
+<Tabs>
+  <Tab title="Azure OpenAI">
+    <Steps>
+      <Step title="Obtain credentials from your IT department">
+        You need three values from whoever manages your Azure OpenAI resource:
+        - **Endpoint** — in the form `https://<resource-name>.openai.azure.com/`
+        - **Deployment name** — the name given to the deployed model (e.g. `gpt-4o-mini`)
+        - **API key** — one of the two keys shown in the Azure portal under **Keys and Endpoint**
+      </Step>
+      <Step title="Open Cody Settings">
+        Click the settings icon in the assistant panel, then navigate to the **Inteligencia Artificial** (AI) section.
+      </Step>
+      <Step title="Select Azure OpenAI">
+        Choose **Azure OpenAI** from the provider selector. The Endpoint and Deployment fields will appear.
+      </Step>
+      <Step title="Enter your credentials">
+        Fill in the endpoint URL, deployment name, and API key. Cody saves these fields as `aiEndpoint`, `aiDeployment`, and `aiApiKey` in `AppSettings`.
+      </Step>
+      <Step title="Trigger a sync to test">
+        Press **Sync Outlook** (or use `Win+Shift+S`). If the AI connection is working, classified suggestions will appear with higher confidence scores (≥ 0.93) compared to local classification.
+      </Step>
+    </Steps>
+
+    ```json
+    {
+      "aiProvider": "azure",
+      "aiEndpoint": "https://my-company.openai.azure.com/",
+      "aiDeployment": "gpt-4o-mini",
+      "aiApiKey": "<your-key-here>"
+    }
+    ```
+  </Tab>
+  <Tab title="OpenAI">
+    <Steps>
+      <Step title="Create an API key">
+        Go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) and create a new secret key. Copy it immediately — it will not be shown again.
+      </Step>
+      <Step title="Open Cody Settings">
+        Click the settings icon in the assistant panel, then navigate to the **Inteligencia Artificial** (AI) section.
+      </Step>
+      <Step title="Select OpenAI">
+        Choose **OpenAI** from the provider selector. Only the API key field is required — no endpoint or deployment name needed.
+      </Step>
+      <Step title="Enter your API key">
+        Paste the key into the API Key field. Cody saves it as `aiApiKey` in `AppSettings` and uses the `gpt-4o-mini` model by default.
+      </Step>
+      <Step title="Trigger a sync to test">
+        Press **Sync Outlook** (or use `Win+Shift+S`) to run a classification pass. Suggestions with AI classification will have a confidence of 0.93 or higher.
+      </Step>
+    </Steps>
+
+    ```json
+    {
+      "aiProvider": "openai",
+      "aiApiKey": "<your-key-here>"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## How Classification Works
+
+When AI is configured and an Outlook sync runs, Cody sends a batch request containing the numbered list of email subjects and sender names. The AI responds with a JSON array assigning each email an `isTask` flag, a task title, a category, a subcategory, a priority, and an optional `dueInDays` estimate.
+
+The result is mapped back onto each `InboxSuggestion`:
+
+| Field | Source when AI is active | Source without AI |
+|---|---|---|
+| `category` | AI response (validated against known taxonomy) | Local keyword classifier |
+| `subcategory` | AI response (validated against parent category) | Local keyword classifier |
+| `priority` | AI response (`urgent` / `high` / `normal`) | Keyword heuristic |
+| `dueAt` | AI `dueInDays` converted to ISO timestamp | Keyword heuristic (today / tomorrow / +3 days) |
+| `confidence` | `0.93` | `0.88` (keyword match) or `0.58` (fallback) |
+| `needsReview` | `true` when category is `"Por clasificar"` | `true` when category is `"Por clasificar"` |
+
+## Fallback Behavior
+
+<CardGroup cols={2}>
+  <Card title="No AI configured" icon="cpu">
+    Cody uses its built-in keyword classifier. Action verbs in the subject and body preview (e.g. "revisar", "confirmar", "enviar") trigger task creation. Category assignment is regex-based and may require more manual review.
+  </Card>
+  <Card title="AI configured but unavailable" icon="wifi-slash">
+    If the AI request fails — due to a network error, timeout (25 s), or invalid credentials — Cody falls back to the local keyword classifier silently. No sync is blocked and no error is shown to the user.
+  </Card>
+</CardGroup>
+
+## Reviewing Low-Confidence Suggestions
+
+When the AI (or local classifier) assigns the category `"Por clasificar"` to a suggestion, the `needsReview` flag is set to `true`. Cody highlights these suggestions in the Inbox panel and prompts you to confirm or change the category before accepting the task. This keeps your task list clean without requiring you to re-sync.
+
+## Settings Reference
+
+All AI settings live in the `AppSettings` interface:
+
+```typescript
+export interface AppSettings {
+  // ...other fields
+  aiProvider?: AiProvider    // 'azure' | 'openai'
+  aiApiKey?: string          // API key for the selected provider
+  aiEndpoint?: string        // Azure only: resource endpoint URL
+  aiDeployment?: string      // Azure only: deployment name
+}
+```
+
+Data is stored at runtime in `%APPDATA%/cody-desktop-assistant/cody-data.json` on the user's machine. It is never written to the project repository or transmitted to any server other than the configured AI provider.

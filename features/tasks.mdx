@@ -1,0 +1,198 @@
+---
+title: "Task Manager: Categories, Priorities, and Recurrence"
+sidebarTitle: "Task Manager"
+description: "Manage tasks with categories, subcategories, priority levels, due dates, recurrence rules, and automatic priority escalation as deadlines approach."
+---
+
+Cody's task manager is the operational core of the assistant. Every actionable item — whether created manually, detected in an email, or imported from a calendar event — becomes a `Task` with a priority, category, due date, and optional recurrence rule. As deadlines draw closer, Cody automatically escalates priority so the most time-sensitive work always surfaces first.
+
+## The `Task` Interface
+
+All task data is defined in `src/types.ts`. The full interface is:
+
+```typescript
+export interface Task {
+  id: string
+  title: string
+  detail: string
+  category: string
+  priority: Priority         // 'urgent' | 'high' | 'normal'
+  dueAt?: string             // ISO 8601 timestamp
+  status: TaskStatus         // 'pending' | 'done'
+  source: Source             // 'email' | 'calendar' | 'manual'
+  confidence: number         // 0–1 classification confidence
+  sender?: string            // populated for email-sourced tasks
+  subcategory?: string
+  workflowStatus?: string    // 'Pending' | 'In progress' | 'Review' | 'Overdue'
+  owner?: string
+  recurrence?: Recurrence    // 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
+  createdAt?: string
+  completedAt?: string
+}
+```
+
+Supporting types:
+
+```typescript
+export type Priority     = 'urgent' | 'high' | 'normal'
+export type TaskStatus   = 'pending' | 'done'
+export type Source       = 'email' | 'calendar' | 'manual'
+export type Recurrence   = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
+```
+
+---
+
+## Priority Levels
+
+<CardGroup cols={3}>
+  <Card title="Normal" icon="circle" color="#6b7280">
+    Standard workload. No immediate deadline pressure. Displayed without colour emphasis.
+  </Card>
+  <Card title="High" icon="circle" color="#f59e0b">
+    Due within the next **3 days**. Amber highlight. Appears near the top of the task list.
+  </Card>
+  <Card title="Urgent" icon="circle" color="#ef4444">
+    Due within the next **24 hours**. Red highlight. Drives the pet into `alert` mood.
+  </Card>
+</CardGroup>
+
+### Automatic Priority Escalation
+
+Cody evaluates deadlines continuously and escalates priorities without manual intervention:
+
+| Condition | Resulting priority | Workflow status |
+|---|---|---|
+| `dueAt` is more than 3 days away | `normal` | `Pending` or `In progress` |
+| `dueAt` ≤ 3 days from now | escalated to `high` | unchanged |
+| `dueAt` ≤ 24 hours from now | escalated to `urgent` | unchanged |
+| `dueAt` is in the past | `urgent` (stays) | `Overdue` |
+
+<Tip>
+  Use the global shortcut **`Win+Shift+T`** to open a quick task-creation dialog from anywhere on your desktop — without bringing up the full assistant panel. The new task lands in the task list immediately.
+</Tip>
+
+---
+
+## Categories and Subcategories
+
+Tasks are organised using a two-level taxonomy defined in `src/wordData.ts`. Cody ships with a process-safety area default taxonomy, but categories are fully customisable per installation.
+
+The default taxonomy includes **six top-level categories**, each with several subcategories:
+
+<Accordion title="Programa SP">
+  - Seguimiento de recomendaciones de estudio PHA
+  - Momentos de Seguridad de Procesos
+  - Visitas de Seguridad de Procesos
+  - Programa Anual de Capacitación 2026
+  - Participación en LACPS 2026
+</Accordion>
+
+<Accordion title="Hitos 2026">
+  - Hito 2
+  - Hito 5
+</Accordion>
+
+<Accordion title="Incidentes de Seguridad de Procesos">
+  - Informes finales
+  - Seguimiento de incidentes
+</Accordion>
+
+<Accordion title="Gestión Mensual de SP">
+  - Comité Mensual de SP
+  - Sistemáticas GEB
+  - Indicadores de desempeño
+  - Inducción de SP
+  - Directorio de SP
+</Accordion>
+
+<Accordion title="Servicios 2026">
+  - Pool de Consultoría (IESCO)
+  - Videos 3D
+  - Auditoría Mantenimiento Preventivo
+  - Información de SP
+  - Guía de procedimientos operativos
+  - Capacitación en Metodología Source
+</Accordion>
+
+<Accordion title="Mejoras">
+  - Disciplina Operacional
+  - Elementos PSM
+  - Procedimientos Nuevos de PSM
+  - Consultas
+</Accordion>
+
+Tasks that cannot be matched to a known category are placed in **"Por clasificar"** (needs review) and shown with a review indicator in the Inbox panel.
+
+---
+
+## Task Sources
+
+| Source | Description |
+|---|---|
+| `email` | Detected automatically during an Outlook Classic sync. The `sender` field identifies the originating contact. |
+| `calendar` | Imported from a calendar event during sync. |
+| `manual` | Created directly by the user via the task form or `Win+Shift+T`. |
+
+---
+
+## Workflow Statuses
+
+The `workflowStatus` field tracks the progress of a task through your workflow. The values are free-form strings, with Cody using these four by default:
+
+| Status | Meaning |
+|---|---|
+| `Pending` | Task received, not yet started |
+| `In progress` | Actively being worked on |
+| `Review` | Completed work awaiting validation |
+| `Overdue` | Set automatically when `dueAt` passes without completion |
+
+---
+
+## Recurrence Rules
+
+Recurring tasks repeat automatically. When you mark an instance as `done`, Cody schedules the next occurrence according to the `recurrence` rule:
+
+| Rule | Next due date |
+|---|---|
+| `none` | No repetition |
+| `daily` | Tomorrow at the same time |
+| `weekly` | 7 days later |
+| `biweekly` | 14 days later |
+| `monthly` | Same day next month |
+
+The completed instance is archived with a `completedAt` timestamp. The new instance is created fresh with `status: 'pending'` and a `createdAt` equal to the completion moment.
+
+---
+
+## Day-Status Traffic Light
+
+The top bar of the assistant panel shows a colour-coded status indicator that gives you an at-a-glance reading of the day's workload:
+
+| Colour | Condition |
+|---|---|
+| 🟢 Green | No urgent tasks, nothing overdue, no imminent meetings |
+| 🟡 Amber | At least one task due today, or a meeting starting within the hour |
+| 🔴 Red | At least one urgent or overdue task |
+
+---
+
+## Progress View
+
+The **Progress** screen (accessible from the sidebar) shows productivity metrics for the current week:
+
+- Tasks completed per day over the last 7 days (bar chart)
+- Total tasks completed vs. created this week
+- Current streak of days with at least one task completed
+- Overload alert when the number of open urgent tasks is unusually high
+
+---
+
+## Exporting Tasks
+
+From **Settings** you can:
+
+- **Export to CSV** — compatible with Microsoft Excel; includes all fields.
+- **Export backup to JSON** — a full snapshot of all tasks, meetings, and settings.
+- **Export support diagnostics** — a sanitised report (no sensitive content) for troubleshooting.
+
+All exports use the native OS save dialog and write only to the path you choose.

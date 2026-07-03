@@ -1,0 +1,213 @@
+---
+title: "Export Tasks, Backups, and Diagnostic Reports"
+sidebarTitle: "Export & Backup"
+description: "Export your tasks to CSV for Excel, create a full JSON backup of all Cody data, and generate a support diagnostics report without sensitive information."
+---
+
+Cody provides three ways to get your data out of the app: a CSV export of all tasks (for Excel or any spreadsheet tool), a full JSON backup of the entire application state, and a diagnostics report you can share with support without exposing personal information. All exports open a native Windows **Save As** dialog so you can choose exactly where the file lands.
+
+## Export API
+
+Both export operations go through the `window.desktop` API exposed by the preload layer. Their signatures are:
+
+```typescript
+// Open a Save As dialog and write content to the chosen path.
+// Returns the saved file path, or null if the dialog was cancelled.
+exportFile(defaultName: string, content: string): Promise<string | null>
+
+// Build a diagnostics report and open a Save As dialog.
+// Returns the saved file path, or null if the dialog was cancelled.
+exportDiagnostics(): Promise<string | null>
+```
+
+Both calls are validated in the main process — `exportFile` rejects payloads that exceed the 10 MB export size limit before opening the dialog.
+
+## CSV export
+
+The CSV export writes every task in your list to a plain-text file that Excel, Google Sheets, and LibreOffice Calc can open directly.
+
+**Columns included:**
+
+| Column | Source field |
+|---|---|
+| Title | `task.title` |
+| Detail | `task.detail` |
+| Category | `task.category` |
+| Subcategory | `task.subcategory` |
+| Priority | `task.priority` — `urgent`, `high`, or `normal` |
+| Status | `task.status` — `pending` or `done` |
+| Due date | `task.dueAt` (ISO 8601) |
+| Owner | `task.owner` |
+| Source | `task.source` — `email`, `calendar`, or `manual` |
+| Recurrence | `task.recurrence` — `none`, `daily`, `weekly`, `biweekly`, or `monthly` |
+| Created | `task.createdAt` |
+| Completed | `task.completedAt` |
+
+**How to export:**
+
+<Steps>
+  <Step title="Open Settings">
+    Click the gear icon in the Cody panel sidebar to open the Settings screen.
+  </Step>
+  <Step title="Click Export tasks (CSV)">
+    Under **Export & Backup**, click **Export tasks to CSV**. Cody serialises all current tasks and calls `window.desktop.exportFile`.
+  </Step>
+  <Step title="Choose a destination">
+    A native Windows **Save As** dialog opens with a default filename such as `cody-tasks-2024-11-15.csv`. Choose a folder and click **Save**.
+  </Step>
+  <Step title="Open in Excel">
+    Open the file in Excel. If prompted about the delimiter, choose **Comma** and **UTF-8** encoding.
+  </Step>
+</Steps>
+
+```typescript
+// Example: trigger a CSV export from a React component
+const handleExportCsv = async () => {
+  const csv = buildCsvString(appState.tasks) // serialise tasks to CSV text
+  const today = new Date().toISOString().slice(0, 10)
+  const savedPath = await window.desktop.exportFile(`cody-tasks-${today}.csv`, csv)
+  if (savedPath) {
+    await window.desktop.notify('Exportación completada', `Guardado en ${savedPath}`)
+  }
+}
+```
+
+## JSON backup
+
+The JSON backup writes the **entire `AppState`** object to disk — tasks, suggestions, meetings, dismissed suggestion IDs, briefing timestamps, and all settings. It is a complete snapshot you can use to restore Cody on the same machine or on a new one.
+
+```typescript
+// Example: trigger a full JSON backup
+const handleBackup = async () => {
+  const json = JSON.stringify(appState, null, 2)
+  const today = new Date().toISOString().slice(0, 10)
+  const savedPath = await window.desktop.exportFile(`cody-backup-${today}.json`, json)
+  if (savedPath) {
+    await window.desktop.notify('Respaldo completado', `Guardado en ${savedPath}`)
+  }
+}
+```
+
+**To restore from a JSON backup:**
+
+<Steps>
+  <Step title="Quit Cody">
+    Right-click the pet widget and select **Salir**, or use **File → Quit** in the panel.
+  </Step>
+  <Step title="Open the data folder">
+    Press `Win + R`, type `%APPDATA%\cody-desktop-assistant`, and press Enter.
+  </Step>
+  <Step title="Replace the data file">
+    Copy your backup file into this folder and rename it to `cody-data.json`, replacing the existing file.
+  </Step>
+  <Step title="Start Cody">
+    Launch Cody normally. It reads the restored file on startup.
+  </Step>
+</Steps>
+
+<Warning>
+  The JSON backup may contain personal information: task titles, meeting attendees, email senders, your Outlook account name, and — if you have configured AI — your API key. **Do not commit backup files to version control**, share them over unencrypted channels, or store them in a publicly accessible cloud folder. Keep backups in a personal, access-controlled location.
+</Warning>
+
+## Automatic daily backup
+
+Cody automatically copies the primary data file to a backup once per calendar day, without any action from you.
+
+**How it works:**
+
+- Before every save, Cody checks whether a backup from today already exists.
+- If not, it copies `cody-data.json` to `cody-data.backup.json` (same directory).
+- The backup is written *before* the new data is saved, so it captures the state at the **start** of each day.
+- If the primary file becomes unreadable on startup (parse error, corruption), Cody automatically falls back to the backup and logs the event to `startup.log`.
+
+**Backup file paths:**
+
+```powershell
+# Primary data file
+%APPDATA%\cody-desktop-assistant\cody-data.json
+
+# Automatic daily backup
+%APPDATA%\cody-desktop-assistant\cody-data.backup.json
+
+# Startup log (errors and diagnostic events)
+%APPDATA%\cody-desktop-assistant\startup.log
+```
+
+<Info>
+  The automatic backup is a single rolling file — it is overwritten each day. It protects against same-day corruption, but it is not a full history. Use the manual **JSON backup** export if you need long-term snapshots before major changes.
+</Info>
+
+## Diagnostics export
+
+The diagnostics export generates a structured JSON report that contains **no task content, no email data, and no API keys**. Share it with support to help diagnose startup failures, data file issues, or unexpected behaviour.
+
+**What the report contains:**
+
+<Accordion title="App metadata">
+  - Application name and version number
+  - Whether the build is packaged (`app.isPackaged`)
+  - `userData` folder path (without file contents)
+</Accordion>
+
+<Accordion title="Runtime versions">
+  - `process.platform` and `process.arch`
+  - Electron, Chromium, and Node.js version strings
+</Accordion>
+
+<Accordion title="Window state">
+  - Whether the assistant window is currently visible
+  - Whether the pet window is currently visible
+</Accordion>
+
+<Accordion title="Data file info">
+  - Whether `cody-data.json` and `cody-data.backup.json` exist
+  - File sizes in bytes
+  - Last-modified timestamps
+</Accordion>
+
+<Accordion title="Data summary (counts only — no content)">
+  - Number of tasks, suggestions, meetings, and categories
+  - Whether an Outlook account, AI provider, and AI key are configured (`true`/`false` — key value is never included)
+  - Current pet variant and auto-sync interval
+  - Whether `launchAtLogin` is enabled
+</Accordion>
+
+<Accordion title="Focus Mode state">
+  - Current mode (`focus` or `dnd`) and end time, if active
+  - Number of reminders currently scheduled
+</Accordion>
+
+**To generate a diagnostics report:**
+
+<Steps>
+  <Step title="Open Settings">
+    Click the gear icon in the Cody panel to open Settings.
+  </Step>
+  <Step title="Click Export diagnostics">
+    Under **Export & Backup**, click **Export support diagnostics**. Cody builds the report and opens a **Save As** dialog with a default filename like `cody-diagnostico-2024-11-15.json`.
+  </Step>
+  <Step title="Save and share">
+    Save the file and attach it to your support request.
+  </Step>
+</Steps>
+
+```typescript
+// Trigger a diagnostics export programmatically
+const handleDiagnostics = async () => {
+  const savedPath = await window.desktop.exportDiagnostics()
+  if (savedPath) {
+    await window.desktop.notify('Diagnóstico guardado', `Archivo en ${savedPath}`)
+  }
+}
+```
+
+## File size limits
+
+Cody enforces hard limits on file sizes to prevent runaway storage use:
+
+| Limit | Constant | Value |
+|---|---|---|
+| Primary data file | `MAX_DATA_BYTES` | 5 MB (`5 * 1024 * 1024` bytes) |
+| Export files (CSV, JSON backup) | `MAX_EXPORT_BYTES` | 10 MB (`10 * 1024 * 1024` bytes) |
+
+If a save operation would exceed `MAX_DATA_BYTES`, Cody rejects it and surfaces an error message without writing to disk. If an export payload exceeds `MAX_EXPORT_BYTES`, the main process returns `null` from `exportFile` before opening the Save dialog.

@@ -1,0 +1,694 @@
+---
+title: "TypeScript Type Reference for Cody Assistant"
+sidebarTitle: "Data Types"
+description: "All TypeScript interfaces and union types used in Cody Assistant — Task, Meeting, AppState, AppSettings, InboxSuggestion, FocusState, PetUpdate, and more."
+---
+
+All types described on this page are exported from `src/types.ts` and shared between the renderer, the Electron main process, and the preload bridge. Import them directly in renderer code:
+
+```typescript
+import type {
+  AppState,
+  AppSettings,
+  Task,
+  Meeting,
+  InboxSuggestion,
+  Reminder,
+  FocusState,
+  FocusMode,
+  PetUpdate,
+  PetMood,
+  PetVariant,
+  AiConfig,
+  AiProvider,
+  OutlookSyncResult,
+  Priority,
+  TaskStatus,
+  Source,
+  Recurrence,
+} from '../../src/types'
+```
+
+<Note>
+  These types are used verbatim in the `window.desktop` bridge methods. Passing
+  an object that does not match the expected shape will either be rejected by
+  the main-process validation helpers or silently coerced — always use the
+  correct types.
+</Note>
+
+---
+
+## Primitive Union Types
+
+### `Priority`
+
+```typescript
+export type Priority = 'urgent' | 'high' | 'normal'
+```
+
+Represents the importance level of a task. Used to drive sort order and visual priority badges in the UI.
+
+| Value | Meaning |
+|---|---|
+| `'urgent'` | Requires immediate attention; surfaced at the top of task lists |
+| `'high'` | Important but not time-critical |
+| `'normal'` | Standard priority |
+
+---
+
+### `TaskStatus`
+
+```typescript
+export type TaskStatus = 'pending' | 'done'
+```
+
+Lifecycle state of a task.
+
+| Value | Meaning |
+|---|---|
+| `'pending'` | Task is active and incomplete |
+| `'done'` | Task has been completed |
+
+---
+
+### `Source`
+
+```typescript
+export type Source = 'email' | 'calendar' | 'manual'
+```
+
+Indicates how a task or item originated.
+
+| Value | Meaning |
+|---|---|
+| `'email'` | Extracted from an Outlook inbox item |
+| `'calendar'` | Derived from a calendar event |
+| `'manual'` | Created directly by the user |
+
+---
+
+### `Recurrence`
+
+```typescript
+export type Recurrence = 'none' | 'daily' | 'weekly' | 'biweekly' | 'monthly'
+```
+
+Controls how often a recurring task repeats.
+
+| Value | Meaning |
+|---|---|
+| `'none'` | One-time task |
+| `'daily'` | Repeats every day |
+| `'weekly'` | Repeats every week |
+| `'biweekly'` | Repeats every two weeks |
+| `'monthly'` | Repeats once a month |
+
+---
+
+### `PetVariant`
+
+```typescript
+export type PetVariant = 'bunny' | 'froggo' | 'panda' | 'cow' | 'cat' | 'dog'
+```
+
+The visual character skin for the desktop pet. The selected variant is persisted in `AppSettings.petVariant`.
+
+---
+
+## Task
+
+```typescript
+export interface Task {
+  id: string
+  title: string
+  detail: string
+  category: string
+  priority: Priority
+  dueAt?: string
+  status: TaskStatus
+  source: Source
+  confidence: number
+  sender?: string
+  subcategory?: string
+  workflowStatus?: string
+  owner?: string
+  recurrence?: Recurrence
+  createdAt?: string
+  completedAt?: string
+}
+```
+
+The core data model for a work item in Cody. Tasks are stored in `AppState.tasks`.
+
+<ResponseField name="id" type="string" required>
+  Unique identifier for the task. Used as a key for reminder scheduling and
+  list reconciliation.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Short, human-readable task title displayed in lists and notifications.
+</ResponseField>
+
+<ResponseField name="detail" type="string" required>
+  Extended description or body of the task. May be empty.
+</ResponseField>
+
+<ResponseField name="category" type="string" required>
+  Primary category label (e.g. `"Work"`, `"Personal"`). Categories are
+  managed in `AppState.categories`.
+</ResponseField>
+
+<ResponseField name="priority" type="Priority" required>
+  Urgency level — `'urgent'`, `'high'`, or `'normal'`.
+</ResponseField>
+
+<ResponseField name="dueAt" type="string">
+  ISO 8601 date-time string for when the task is due. Optional; tasks
+  without a due date are considered undated.
+</ResponseField>
+
+<ResponseField name="status" type="TaskStatus" required>
+  Current lifecycle status — `'pending'` or `'done'`.
+</ResponseField>
+
+<ResponseField name="source" type="Source" required>
+  Origin of the task — `'email'`, `'calendar'`, or `'manual'`.
+</ResponseField>
+
+<ResponseField name="confidence" type="number" required>
+  AI confidence score in the range `0–1` for tasks extracted by the AI
+  pipeline. Manually created tasks should use `1`.
+</ResponseField>
+
+<ResponseField name="sender" type="string">
+  Email address or display name of the person who sent the originating
+  message. Present only for `source: 'email'` tasks.
+</ResponseField>
+
+<ResponseField name="subcategory" type="string">
+  Optional finer-grained classification within the primary `category`.
+</ResponseField>
+
+<ResponseField name="workflowStatus" type="string">
+  Optional custom workflow stage label (e.g. `"In Review"`, `"Blocked"`).
+</ResponseField>
+
+<ResponseField name="owner" type="string">
+  Optional assignee or owner name for delegated tasks.
+</ResponseField>
+
+<ResponseField name="recurrence" type="Recurrence">
+  Recurrence frequency. Defaults to `'none'` when not set.
+</ResponseField>
+
+<ResponseField name="createdAt" type="string">
+  ISO 8601 timestamp of when the task was created.
+</ResponseField>
+
+<ResponseField name="completedAt" type="string">
+  ISO 8601 timestamp of when the task was marked done.
+</ResponseField>
+
+---
+
+## InboxSuggestion
+
+```typescript
+export interface InboxSuggestion extends Omit<Task, 'status'> {
+  excerpt: string
+  needsReview?: boolean
+}
+```
+
+A candidate task extracted from the Outlook inbox by the AI sync pipeline. It extends `Task` (minus `status`, since suggestions are pre-acceptance items) and adds two extra fields.
+
+<ResponseField name="excerpt" type="string" required>
+  A short snippet from the originating email body, shown in the Inbox
+  review UI so the user can judge relevance before accepting the suggestion.
+</ResponseField>
+
+<ResponseField name="needsReview" type="boolean">
+  When `true`, the AI classifier flagged this suggestion as low-confidence
+  or ambiguous and the user should review it before accepting. Defaults to
+  `false` when absent.
+</ResponseField>
+
+<Note>
+  All other fields (`id`, `title`, `detail`, `category`, `priority`,
+  `source`, `confidence`, etc.) are inherited from `Task`. Refer to the
+  `Task` documentation above for their semantics.
+</Note>
+
+---
+
+## Meeting
+
+```typescript
+export interface Meeting {
+  id: string
+  title: string
+  startsAt: string
+  endsAt?: string
+  attendees: string[]
+  joinUrl?: string
+  location?: string
+  mode?: 'virtual' | 'in-person' | 'hybrid'
+}
+```
+
+A calendar event imported from Outlook. Meetings are stored in `AppState.meetings`.
+
+<ResponseField name="id" type="string" required>
+  Unique identifier for the meeting (typically the Outlook entry ID or a
+  derived hash). Reminder IDs for meetings are prefixed with `meeting-`
+  followed by this value.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Subject line of the calendar event.
+</ResponseField>
+
+<ResponseField name="startsAt" type="string" required>
+  ISO 8601 date-time string for when the meeting begins.
+</ResponseField>
+
+<ResponseField name="endsAt" type="string">
+  ISO 8601 date-time string for when the meeting ends. Optional for
+  open-ended or all-day events.
+</ResponseField>
+
+<ResponseField name="attendees" type="string[]" required>
+  List of attendee display names or email addresses.
+</ResponseField>
+
+<ResponseField name="joinUrl" type="string">
+  Teams or other conferencing join URL. When present and the platform is
+  Windows, the reminder notification includes an action button that opens
+  this URL directly.
+</ResponseField>
+
+<ResponseField name="location" type="string">
+  Physical or virtual location string from the calendar event.
+</ResponseField>
+
+<ResponseField name="mode" type="'virtual' | 'in-person' | 'hybrid'">
+  Meeting format classification. Derived from the presence of a `joinUrl`
+  and the calendar event body.
+</ResponseField>
+
+---
+
+## AiProvider
+
+```typescript
+export type AiProvider = 'azure' | 'openai'
+```
+
+Identifies which AI backend to use for email classification.
+
+| Value | Meaning |
+|---|---|
+| `'azure'` | Azure OpenAI Service (requires `endpoint` and `deployment`) |
+| `'openai'` | OpenAI API (requires only `apiKey`) |
+
+---
+
+## AiConfig
+
+```typescript
+export interface AiConfig {
+  provider: AiProvider
+  apiKey: string
+  endpoint?: string
+  deployment?: string
+}
+```
+
+Credentials and routing information for the AI classification backend used during Outlook sync.
+
+<ResponseField name="provider" type="AiProvider" required>
+  The AI backend to use — `'azure'` or `'openai'`.
+</ResponseField>
+
+<ResponseField name="apiKey" type="string" required>
+  API key for the chosen provider. Stored in `AppSettings.aiApiKey`.
+</ResponseField>
+
+<ResponseField name="endpoint" type="string">
+  Base URL for Azure OpenAI Service (e.g.
+  `https://my-resource.openai.azure.com/`). Required when `provider` is
+  `'azure'`; unused for `'openai'`.
+</ResponseField>
+
+<ResponseField name="deployment" type="string">
+  Azure deployment name (model deployment) to target. Required when
+  `provider` is `'azure'`; unused for `'openai'`.
+</ResponseField>
+
+<Warning>
+  `apiKey` is stored in plaintext in `cody-data.json` inside the Electron
+  `userData` folder. Avoid logging or transmitting `AiConfig` objects.
+</Warning>
+
+---
+
+## AppSettings
+
+```typescript
+export interface AppSettings {
+  userName: string
+  reminderMinutes: number
+  autoSyncMinutes?: number
+  briefingsEnabled?: boolean
+  briefingHour?: number
+  closingHour?: number
+  textScale?: number
+  petVariant?: PetVariant
+  launchAtLogin?: boolean
+  onboarded?: boolean
+  aiProvider?: AiProvider
+  aiApiKey?: string
+  aiEndpoint?: string
+  aiDeployment?: string
+  outlookAccount?: string
+  lastOutlookSync?: string
+}
+```
+
+User-facing configuration stored inside `AppState.settings`.
+
+<ResponseField name="userName" type="string" required>
+  The user's display name. Used in morning/closing briefing messages.
+</ResponseField>
+
+<ResponseField name="reminderMinutes" type="number" required>
+  How many minutes before a meeting due time to fire a reminder
+  notification.
+</ResponseField>
+
+<ResponseField name="autoSyncMinutes" type="number">
+  Interval in minutes between automatic Outlook syncs. When absent or `0`,
+  automatic sync is disabled.
+</ResponseField>
+
+<ResponseField name="briefingsEnabled" type="boolean">
+  When `true`, Cody sends a morning briefing notification and an evening
+  closing briefing.
+</ResponseField>
+
+<ResponseField name="briefingHour" type="number">
+  Hour of the day (0–23) at which the morning briefing fires.
+</ResponseField>
+
+<ResponseField name="closingHour" type="number">
+  Hour of the day (0–23) at which the closing briefing fires.
+</ResponseField>
+
+<ResponseField name="textScale" type="number">
+  UI text scale factor. `1` is the default; `1.25` increases text by 25%.
+</ResponseField>
+
+<ResponseField name="petVariant" type="PetVariant">
+  Which pet character skin to display. Defaults to the app's built-in
+  default when absent.
+</ResponseField>
+
+<ResponseField name="launchAtLogin" type="boolean">
+  Whether Cody is registered to start automatically with Windows.
+</ResponseField>
+
+<ResponseField name="onboarded" type="boolean">
+  `true` once the user has completed the onboarding flow. Controls whether
+  the setup wizard is shown on startup.
+</ResponseField>
+
+<ResponseField name="aiProvider" type="AiProvider">
+  The AI provider selected by the user.
+</ResponseField>
+
+<ResponseField name="aiApiKey" type="string">
+  API key for the configured AI provider.
+</ResponseField>
+
+<ResponseField name="aiEndpoint" type="string">
+  Azure OpenAI endpoint URL. Only relevant when `aiProvider` is `'azure'`.
+</ResponseField>
+
+<ResponseField name="aiDeployment" type="string">
+  Azure deployment name. Only relevant when `aiProvider` is `'azure'`.
+</ResponseField>
+
+<ResponseField name="outlookAccount" type="string">
+  The email address of the Outlook account used for COM sync. Populated
+  after the first successful sync.
+</ResponseField>
+
+<ResponseField name="lastOutlookSync" type="string">
+  ISO 8601 timestamp of the most recent successful Outlook sync.
+</ResponseField>
+
+---
+
+## AppState
+
+```typescript
+export interface AppState {
+  tasks: Task[]
+  suggestions: InboxSuggestion[]
+  categories: string[]
+  meetings: Meeting[]
+  settings: AppSettings
+  dismissedSuggestionIds?: string[]
+  lastMorningBriefing?: string
+  lastClosingBriefing?: string
+}
+```
+
+The complete serialized state of the Cody application. This is the shape read and written by [`loadData`](/reference/desktop-api#loaddata) and [`saveData`](/reference/desktop-api#savedata).
+
+<ResponseField name="tasks" type="Task[]" required>
+  All active and completed tasks.
+</ResponseField>
+
+<ResponseField name="suggestions" type="InboxSuggestion[]" required>
+  Pending inbox suggestions awaiting user review.
+</ResponseField>
+
+<ResponseField name="categories" type="string[]" required>
+  The full list of user-defined category labels (e.g. `["Work", "Personal",
+  "Finance"]`).
+</ResponseField>
+
+<ResponseField name="meetings" type="Meeting[]" required>
+  Calendar events synced from Outlook.
+</ResponseField>
+
+<ResponseField name="settings" type="AppSettings" required>
+  User preferences and configuration. See [`AppSettings`](#appsettings).
+</ResponseField>
+
+<ResponseField name="dismissedSuggestionIds" type="string[]">
+  IDs of `InboxSuggestion` items that the user explicitly dismissed
+  (neither accepted nor converted to a task). Used to prevent re-surfacing
+  the same suggestion after the next sync.
+</ResponseField>
+
+<ResponseField name="lastMorningBriefing" type="string">
+  ISO 8601 date string of the last day a morning briefing was sent.
+  Used to prevent duplicate briefings.
+</ResponseField>
+
+<ResponseField name="lastClosingBriefing" type="string">
+  ISO 8601 date string of the last day a closing briefing was sent.
+</ResponseField>
+
+---
+
+## Reminder
+
+```typescript
+export interface Reminder {
+  id: string
+  title: string
+  body: string
+  at: string
+  url?: string
+}
+```
+
+A scheduled notification payload. Pass this to [`scheduleReminder`](/reference/desktop-api#schedulereminder).
+
+<ResponseField name="id" type="string" required>
+  Unique identifier. Used to deduplicate and cancel reminders. Meeting
+  reminders should use the prefix `meeting-` (e.g. `"meeting-abc123"`) to
+  receive special Focus-mode handling.
+</ResponseField>
+
+<ResponseField name="title" type="string" required>
+  Notification title. Truncated to 240 characters by the main process.
+</ResponseField>
+
+<ResponseField name="body" type="string" required>
+  Notification body text. Truncated to 240 characters by the main process.
+</ResponseField>
+
+<ResponseField name="at" type="string" required>
+  ISO 8601 date-time string for when the notification should fire. Past
+  timestamps cause `scheduleReminder` to return `false`.
+</ResponseField>
+
+<ResponseField name="url" type="string">
+  An optional `https://` URL. On Windows, the notification is rendered as
+  a rich Toast with an action button that opens this URL (useful for Teams
+  meeting join links). Non-HTTPS URLs are stripped.
+</ResponseField>
+
+---
+
+## FocusMode
+
+```typescript
+export type FocusMode = 'focus' | 'dnd'
+```
+
+The two available focus session modes.
+
+| Value | Behaviour |
+|---|---|
+| `'focus'` | Suppresses non-meeting reminders; meeting reminders and ad-hoc notifications still fire |
+| `'dnd'` | Suppresses all reminders and notifications for the duration |
+
+---
+
+## FocusState
+
+```typescript
+export interface FocusState {
+  mode: FocusMode
+  until: string
+}
+```
+
+The current state of an active focus session, as returned by [`getFocus`](/reference/desktop-api#getfocus) and broadcast via [`onFocusChanged`](/reference/desktop-api#onfocuschanged).
+
+<ResponseField name="mode" type="FocusMode" required>
+  The active focus mode — `'focus'` or `'dnd'`.
+</ResponseField>
+
+<ResponseField name="until" type="string" required>
+  ISO 8601 date-time string representing when the focus session will
+  automatically end.
+</ResponseField>
+
+---
+
+## PetMood
+
+```typescript
+export type PetMood = 'calm' | 'alert' | 'worried' | 'happy'
+```
+
+The current emotional state of the desktop pet, driven by the state of the task list.
+
+| Value | Typical trigger |
+|---|---|
+| `'calm'` | No pending urgent tasks |
+| `'alert'` | One or more high-priority tasks |
+| `'worried'` | One or more urgent tasks |
+| `'happy'` | A task was just completed (precedes a `'celebrate'` update) |
+
+---
+
+## PetUpdate
+
+```typescript
+export type PetUpdate =
+  | { type: 'state'; mood: PetMood; urgent: number; pending: number; variant?: PetVariant }
+  | { type: 'celebrate' }
+```
+
+A discriminated union passed to [`petUpdate`](/reference/desktop-api#petupdate) and received via [`onPetUpdate`](/reference/desktop-api#onpetupdate). Always check `payload.type` before accessing other fields.
+
+**`type: 'state'` variant**
+
+<ResponseField name="type" type="'state'" required>
+  Discriminant — identifies this as a state update.
+</ResponseField>
+
+<ResponseField name="mood" type="PetMood" required>
+  The pet's current mood. Controls which animation the pet plays.
+</ResponseField>
+
+<ResponseField name="urgent" type="number" required>
+  Count of tasks currently in `priority: 'urgent'` and `status: 'pending'`.
+  Displayed as a badge on the pet widget.
+</ResponseField>
+
+<ResponseField name="pending" type="number" required>
+  Total count of tasks with `status: 'pending'` (all priorities).
+</ResponseField>
+
+<ResponseField name="variant" type="PetVariant">
+  When present, instructs the pet window to switch to this character skin.
+  Used when the user changes their pet in settings.
+</ResponseField>
+
+**`type: 'celebrate'` variant**
+
+<ResponseField name="type" type="'celebrate'" required>
+  Discriminant — triggers a one-shot celebration animation in the pet
+  window. No additional fields.
+</ResponseField>
+
+```typescript
+// Sending a state update from the assistant renderer:
+await window.desktop.petUpdate({
+  type: 'state',
+  mood: 'worried',
+  urgent: 2,
+  pending: 7,
+})
+
+// Sending a celebration after a task is completed:
+await window.desktop.petUpdate({ type: 'celebrate' })
+```
+
+---
+
+## OutlookSyncResult
+
+```typescript
+export interface OutlookSyncResult {
+  accountName: string
+  suggestions: InboxSuggestion[]
+  meetings: Meeting[]
+  categories: string[]
+  syncedAt: string
+}
+```
+
+The result returned by [`syncOutlookClassic`](/reference/desktop-api#syncoutlookclassic) after a successful COM sync.
+
+<ResponseField name="accountName" type="string" required>
+  The email address of the Outlook account that was synced (e.g.
+  `"alice@contoso.com"`). Persisted to `AppSettings.outlookAccount`.
+</ResponseField>
+
+<ResponseField name="suggestions" type="InboxSuggestion[]" required>
+  New inbox suggestions extracted from unread emails, optionally classified
+  by the AI pipeline.
+</ResponseField>
+
+<ResponseField name="meetings" type="Meeting[]" required>
+  Calendar events found in the Outlook calendar for the look-ahead window.
+</ResponseField>
+
+<ResponseField name="categories" type="string[]" required>
+  Category labels discovered during the sync (from email folders or AI
+  classification). Merged into `AppState.categories`.
+</ResponseField>
+
+<ResponseField name="syncedAt" type="string" required>
+  ISO 8601 timestamp of when the sync completed. Written to
+  `AppSettings.lastOutlookSync`.
+</ResponseField>

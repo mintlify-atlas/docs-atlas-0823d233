@@ -1,0 +1,186 @@
+---
+title: "Floating Pet: Your Always-On-Top Desktop Companion"
+sidebarTitle: "Floating Pet"
+description: "Cody's animated pet window stays always on top of all windows, reflects your task workload through mood states, and supports six character variants with unique visual themes."
+---
+
+Cody's floating pet is the heart of the desktop experience — a pixel-art character that lives in the corner of your screen, reacts to your workload, and gives you one-click access to the full assistant panel. The pet window is always visible, never intrudes on your workflows, and communicates task urgency through expressive mood states and speech bubbles, so you stay aware of what needs attention without switching context.
+
+## Window Architecture
+
+The pet lives in a dedicated Electron `BrowserWindow` that is completely separate from the main assistant panel. This separation means you can minimize or close the assistant panel without terminating the process — the pet remains running and continues to fire reminders and monitor tasks in the background.
+
+Key window properties set in `electron/main/index.ts`:
+
+```typescript
+petWindow = new BrowserWindow({
+  width: 220,
+  height: 220,
+  frame: false,
+  transparent: true,
+  backgroundColor: '#00000000',
+  alwaysOnTop: true,
+  skipTaskbar: true,
+  resizable: false,
+  hasShadow: false,
+  webPreferences: {
+    preload: join(__dirname, '../preload/index.js'),
+    sandbox: true,
+    contextIsolation: true,
+    nodeIntegration: false
+  }
+})
+```
+
+<Info>
+  The pet window uses pixel-art sprites stored in `src/assets/pets/`. Each variant has its own `Idle` and `Walk` sprite sheets, with different frame counts and timing. Sprite sheets are standard horizontal strips; the CSS animation steps through frames using `background-position`.
+</Info>
+
+### Staying Always on Top
+
+`alwaysOnTop: true` alone is not enough to survive every focus change on Windows (for example, when a game or full-screen application temporarily claims the foreground). Cody uses two reinforcement mechanisms:
+
+1. **Event hooks** — `petWindow.on('blur', ensurePetAlwaysOnTop)`, `on('show', ...)`, and `on('restore', ...)` all call `ensurePetAlwaysOnTop()` immediately.
+2. **Periodic timer** — A `setInterval` fires every **2 500 ms** and calls `ensurePetAlwaysOnTop()` plus `petWindow.moveTop()` whenever the pet is visible and not being dragged.
+
+```typescript
+petTopTimer = setInterval(() => {
+  if (petWindow?.isVisible() && !petDragState) {
+    ensurePetAlwaysOnTop()
+    petWindow.moveTop()
+  }
+}, 2500)
+```
+
+`ensurePetAlwaysOnTop` sets the level to `'screen-saver'` and enables `visibleOnAllWorkspaces` so the pet appears on every virtual desktop and even above full-screen windows when possible.
+
+---
+
+## Pet Variants
+
+You can choose your companion from **Settings → Pet**. Each variant ships with its own sprite sheet and applies a matching visual theme — palette, accent colours, brand icon, and greeting illustration — to the assistant panel.
+
+<CardGroup cols={3}>
+  <Card title="Bunny 🐰" icon="rabbit">
+    2-frame idle, 4-frame walk. 64 × 64 px sprites at 3× scale.
+  </Card>
+  <Card title="Froggo 🐸" icon="frog">
+    4-frame idle strip, 2-frame land. 64 × 64 px at 3× scale.
+  </Card>
+  <Card title="Panda 🐼" icon="circle">
+    4-frame idle, 4-frame walk. 64 × 64 px at 3× scale.
+  </Card>
+  <Card title="Cow 🐄" icon="circle">
+    6-frame idle, 6-frame walk. 64 × 64 px at 3× scale.
+  </Card>
+  <Card title="Cat 🐱" icon="cat">
+    10-frame idle sheet. 32 × 32 px at 4× scale.
+  </Card>
+  <Card title="Dog 🐶" icon="dog">
+    5-frame idle, 5-frame walk. 25 × 20 px at 5× scale.
+  </Card>
+</CardGroup>
+
+The `PetVariant` type captures all options:
+
+```typescript
+export type PetVariant = 'bunny' | 'froggo' | 'panda' | 'cow' | 'cat' | 'dog'
+```
+
+---
+
+## Greeting Scene
+
+The assistant panel's greeting illustration changes based on the current time of day:
+
+| Time window | Scene |
+|---|---|
+| Morning | Bright sun, warm sky |
+| Afternoon / Evening | Warm sunset with golden tones |
+| Night | Dark sky with moon and stars |
+
+The greeting text also adapts: *Good morning*, *Good afternoon*, or *Good evening*, personalised with the user name set during onboarding.
+
+---
+
+## Dragging and Clicking
+
+The pet supports two gestures distinguished by pointer movement:
+
+<Steps>
+  <Step title="Click (no drag)">
+    Press and release without moving the pointer more than 5 px. `endPetDrag()` returns `false` (moved = false) and Cody calls `openAssistant()` to show the panel.
+  </Step>
+  <Step title="Drag (hold and move)">
+    Hold the pointer button and move. The main process polls `screen.getCursorScreenPoint()` every **16 ms** and repositions the window accordingly. The pet is clamped to the work area with a configurable overhang so it can visually hug screen edges.
+  </Step>
+</Steps>
+
+When drag ends, the pet is snapped back into the safe work area if it has drifted beyond screen bounds.
+
+**Right-click** on the pet shows a native context menu:
+
+- **Open Cody** — shows the assistant panel
+- **Focus Mode 25 min / 50 min** — starts a timed focus session
+- **Do Not Disturb 60 min** — starts a DND session
+- **Disable Focus Mode** (shown instead when Focus is active)
+- **Quit** — fully exits the application
+
+---
+
+## Mood System
+
+The pet expresses four moods driven by pending and urgent task counts. The assistant panel calls `window.desktop.petUpdate(payload)` after any task state change; the main process forwards the payload to the pet window via IPC.
+
+```typescript
+export type PetMood = 'calm' | 'alert' | 'worried' | 'happy'
+
+export type PetUpdate =
+  | { type: 'state'; mood: PetMood; urgent: number; pending: number; variant?: PetVariant }
+  | { type: 'celebrate' }
+```
+
+### Mood Trigger Conditions
+
+| Mood | Trigger | CSS class | Speech bubble |
+|---|---|---|---|
+| `calm` | No urgent tasks, nothing overdue | `mood-calm` | *(silent)* |
+| `alert` | One or more `urgent` priority tasks | `mood-alert` | "¡Ojo! N urgent(s) pending" |
+| `worried` | One or more overdue tasks | `mood-worried` | "There are overdue tasks 😟" |
+| `happy` | Just cleared all pending tasks (transition from non-null mood) | `mood-happy` | "All up to date! 🎉" |
+
+### Celebration
+
+When you mark a task as done, the assistant sends `{ type: 'celebrate' }`. The pet plays a celebration animation for 1 600 ms and shows the bubble *"+1! Well done 🥕"* for 3 500 ms.
+
+```typescript
+if (payload.type === 'celebrate') {
+  setCelebrating(true)
+  showBubble('¡+1! Bien hecho 🥕', 3500)
+  celebrateTimer.current = window.setTimeout(() => setCelebrating(false), 1600)
+  return
+}
+```
+
+---
+
+## Speech Bubbles
+
+Speech bubbles appear above the pet sprite for time-sensitive desktop notifications. They are displayed directly in the transparent pet window — no system notification required — so they appear exactly over the pet regardless of where it is positioned. Bubbles auto-dismiss after a configurable timeout (default 5 000 ms).
+
+Mood transitions trigger bubbles automatically; the pet also shows bubbles for reminders that arrive while the assistant panel is closed.
+
+---
+
+## Keyboard Accessibility
+
+The pet element carries `role="button"` and `tabIndex={0}`. Pressing `Enter` or `Space` while the pet has keyboard focus opens the assistant panel, matching the short-click behaviour.
+
+---
+
+## Global Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Win+Shift+C` | Toggle between pet and assistant panel |
+| `Win+Shift+F` | Toggle Focus Mode (starts 25-min session if inactive) |

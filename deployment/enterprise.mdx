@@ -1,0 +1,252 @@
+---
+title: "Enterprise Deployment and Pilot Readiness Guide"
+sidebarTitle: "Enterprise"
+description: "Deploy Cody Assistant in a corporate environment — distribution requirements, Microsoft Store route, AI configuration, and the recommended path to a version 1.0 enterprise release."
+---
+
+Cody was built from the start to be deployable inside a corporate environment without requiring administrator accounts, Microsoft Graph permissions, or a back-end server of any kind. Version 0.8.0 introduced the security hardening necessary to take the application from a developer prototype to an internal pilot candidate. This guide covers what is already ready, what still needs to be done before a wider rollout, the two distribution paths available (NSIS installer and Microsoft Store), and the step-by-step process for getting Cody onto team members' machines today.
+
+## Current pilot readiness
+
+Cody is ready for a limited internal pilot. The following capabilities are already production-quality:
+
+<CardGroup cols={2}>
+  <Card title="Electron security hardening" icon="shield-halved">
+    Renderer processes run with Chromium sandbox enabled, context isolation, and Node.js integration disabled. Content Security Policy headers are applied to both windows. All navigation outside the app is blocked; `https://` links open in the system browser. Browser permission requests (camera, microphone, notifications) are denied by default.
+  </Card>
+  <Card title="Local Outlook COM integration" icon="envelope">
+    Email and calendar data is read from Outlook Classic installed on the user's machine via COM automation — no Microsoft Graph, no Azure app registration, no admin consent required. Sync happens entirely on the local machine.
+  </Card>
+  <Card title="AI classification with Azure OpenAI" icon="robot">
+    Optional email-to-task classification using Azure OpenAI. Only the email subject and sender name are sent to the AI provider — the email body never leaves the machine. When AI is not configured, a local keyword classifier is used instead.
+  </Card>
+  <Card title="Per-user data storage" icon="folder-open">
+    All tasks, meetings, preferences, and configuration are stored in `%APPDATA%/cody-desktop-assistant/` on the individual user's machine. There is no shared database, no central server, and no data ever written to the repository.
+  </Card>
+  <Card title="Export, backup, and diagnostics" icon="file-export">
+    Users can export tasks to CSV (Excel-compatible), create full JSON backups from Settings, and generate a support diagnostic file that contains technical metadata but no email content or API keys.
+  </Card>
+  <Card title="Per-user installer, no admin" icon="user-lock">
+    The NSIS installer runs per-user. No elevation prompt. No IT ticket needed to install Cody on a corporate workstation.
+  </Card>
+</CardGroup>
+
+### Pilot prerequisites
+
+Before rolling out to a pilot group, confirm the following conditions are met:
+
+- Users are on **Windows** with **Outlook Classic** installed and a corporate profile configured and open.
+- The organization accepts that Cody reads email metadata and calendar entries via **local COM automation** (no cloud permission).
+- A responsible person is available to **handle support tickets and collect diagnostic exports** from users who encounter issues.
+- Either AI is **disabled** (uses local classifier) or an **Azure OpenAI endpoint in the corporate tenant** is configured — personal OpenAI API keys should not be used in a corporate pilot.
+
+## Distribution options
+
+### Option 1 — NSIS installer (recommended for direct corporate deployment)
+
+The fastest path to getting Cody on team members' machines is sharing the NSIS installer produced by `npm.cmd run package:win`.
+
+<Note>
+  The NSIS installer requires no administrator privileges. Each user installs Cody into their own user profile. No IT involvement is needed for the installation itself, though IT may need to allowlist the executable if a corporate antivirus or application control policy is in place.
+</Note>
+
+```text
+Distribute: outputs/Cody Setup <version>.exe
+```
+
+**Limitations without a code-signing certificate:**
+- Windows SmartScreen shows an "Unknown publisher" warning with a "More info → Run anyway" option.
+- On Windows 11 machines with Smart App Control (SAC) enabled, the installer may be blocked with no bypass option. See the [Code signing](#code-signing) section below.
+
+---
+
+### Option 2 — Microsoft Store (resolves code-signing, enables auto-updates)
+
+Publishing Cody on the Microsoft Store eliminates the need to purchase a code-signing certificate — Microsoft signs the package during certification. The Store also manages auto-updates automatically once an update is published.
+
+<Steps>
+  <Step title="Create a Microsoft Partner Center account">
+    Sign up at [partner.microsoft.com](https://partner.microsoft.com). The one-time registration fee is approximately **$99 USD for companies** (company accounts require business verification, which can take a few days). Individual accounts cost approximately $19 USD but are not appropriate for a corporate product.
+  </Step>
+
+  <Step title="Reserve the app name">
+    In Partner Center, create a new app submission and reserve the name **"Cody Assistant"** (verify availability first — names must be unique across the Store).
+  </Step>
+
+  <Step title="Copy identity values into package.json">
+    Partner Center provides three identity values for your app package. Open `package.json` and replace the placeholder values in the `appx` section:
+
+    ```json
+    "appx": {
+      "applicationId": "CodyAssistant",
+      "identityName": "REEMPLAZAR.CodyAssistant",
+      "publisher": "CN=REEMPLAZAR-GUID-DE-PARTNER-CENTER",
+      "publisherDisplayName": "Mariana Llanos",
+      "displayName": "Cody Assistant",
+      "backgroundColor": "#2d332b",
+      "languages": ["es-PE", "es-ES"]
+    }
+    ```
+
+    Replace `identityName` with the **Identity Name** from Partner Center (format: `<PublisherID>.<AppName>`), and replace the `publisher` CN value with the **Publisher** GUID-based string from Partner Center.
+  </Step>
+
+  <Step title="Build and test the MSIX package locally">
+    ```powershell
+    npm.cmd run package:store
+    ```
+
+    This produces a `.appx` file in `outputs/`. **Install and test it on a real Windows machine before submission.** COM automation and PowerShell operate correctly in MSIX full-trust containers, but the packaging changes the file system context — verify that Outlook sync, task creation, and export all work from the installed MSIX.
+  </Step>
+
+  <Step title="Upload to Partner Center and complete the listing">
+    In Partner Center, upload the `.appx`, add a description, screenshots (available in `presentacion_assets/`), and age rating. **A privacy policy URL is mandatory** — publish `PRIVACY.md` as a web page (e.g. GitHub Pages or any public URL) and paste that URL into the Store listing.
+  </Step>
+
+  <Step title="Wait for Microsoft certification">
+    Microsoft reviews new submissions within **1–3 business days**. Once certified, Cody becomes available through the Store and updates are delivered automatically when a new version is published.
+  </Step>
+</Steps>
+
+#### Store technical considerations
+
+<Accordion title="COM automation and PowerShell under MSIX">
+  The `.appx` package runs in an MSIX full-trust container, which means Outlook Classic COM automation and PowerShell scripts **do work** — but the container imposes its own file system virtualization. Always install and test the `.appx` locally before submitting it to certification to catch any path or permission issues that do not appear in the unpackaged build.
+</Accordion>
+
+<Accordion title="Launch at startup under MSIX">
+  The "Start Cody with Windows" option in Settings uses a standard Electron startup registry entry. Under MSIX packaging, this mechanism is replaced by a `StartupTask` manifest declaration. If the Store route is pursued and launch-at-startup is a required feature, the MSIX manifest must be updated to declare a `StartupTask` entry — the current Settings toggle may have no effect in the Store build.
+</Accordion>
+
+<Accordion title="Store commission and B2B licensing">
+  If Cody is charged for through the Store's commerce system, Microsoft retains approximately 12–15%. For Win32 apps, it is permitted to use your own licensing and payment system (selling licenses directly to companies) without going through Store commerce — this avoids the commission entirely. For direct B2B deployment to a single organization, the NSIS installer is more straightforward than the Store route.
+</Accordion>
+
+## Code signing
+
+Without a corporate code-signing certificate, Windows presents friction at installation time:
+
+<CardGroup cols={2}>
+  <Card title="SmartScreen warning" icon="triangle-exclamation">
+    On Windows 10 and Windows 11 (without Smart App Control), SmartScreen shows an "Unknown publisher" dialog. Users can click "More info" → "Run anyway" to proceed. Acceptable for an internal pilot where users are informed in advance.
+  </Card>
+  <Card title="Smart App Control block" icon="ban">
+    On Windows 11 machines where Smart App Control (SAC) is active — common on new personal PCs, less common on corporate-managed machines — unsigned installers are blocked with **no bypass option**. The only fix is to either sign the installer or disable SAC (which cannot be re-enabled without reinstalling Windows).
+  </Card>
+</CardGroup>
+
+**Solution:** Request a code-signing certificate from IT's certificate authority (or purchase an EV certificate from a trusted CA such as DigiCert or Sectigo). Once the installer is signed with a trusted certificate:
+- SmartScreen no longer shows the "Unknown publisher" warning.
+- Smart App Control does not block the installer.
+- On corporate-managed machines (domain-joined or Intune-enrolled), IT can deploy the certificate to the trust store before distribution.
+
+## AI configuration for enterprise
+
+<Note>
+  AI classification is entirely optional. If no AI provider is configured, Cody uses a local keyword classifier that runs fully on-device with no network calls of any kind.
+</Note>
+
+When AI is enabled, Cody sends only two fields per email to the AI provider:
+- **Email subject line**
+- **Sender name**
+
+The **email body is never sent** to any external service. This design limits exposure to metadata rather than content.
+
+**Recommended provider: Azure OpenAI**
+
+Azure OpenAI keeps data within the corporate tenant. Microsoft does not use inputs from Azure OpenAI for model training. This is the appropriate choice for any organization with data residency or confidentiality requirements.
+
+IT must provide three values to configure Azure OpenAI in Cody:
+
+| Setting | Description |
+|---|---|
+| Endpoint URL | The Azure OpenAI resource endpoint (e.g. `https://your-resource.openai.azure.com/`) |
+| Deployment name | The name of the deployed model (e.g. `gpt-4o`) |
+| API key | The API key from the Azure portal for that resource |
+
+Users enter these values in **Settings → Artificial Intelligence** inside Cody. They are stored locally in `%APPDATA%/cody-desktop-assistant/` and never transmitted anywhere other than to the configured endpoint.
+
+**Alternative: disable AI**
+
+If the organization cannot approve Azure OpenAI usage in time for the pilot, AI can be left unconfigured. Cody will use its built-in local keyword classifier for email-to-task suggestions. Classification quality is lower but requires zero network access.
+
+## What is needed before a wider deployment
+
+The following items must be completed before Cody is ready for sale or wide deployment beyond a small pilot group:
+
+<Accordion title="Security and compliance">
+  - Installer signed with a corporate code-signing certificate from IT
+  - SCA (Software Composition Analysis) dependency scan reviewed and approved by IT — verify all third-party packages against the organization's approved-software list
+  - Formal EULA and privacy policy reviewed by legal (the current `EULA.md` and `PRIVACY.md` are drafts)
+  - Defined data retention and data deletion policy (what happens to `%APPDATA%/cody-desktop-assistant/` when an employee leaves)
+  - Formal validation of Azure OpenAI data processing requirements if AI is enabled
+  - Incident reporting procedure and responsible contact defined
+</Accordion>
+
+<Accordion title="Build and release pipeline">
+  - Reproducible build pipeline using GitHub Actions or Azure DevOps (so any developer can produce a verifiably identical installer from a tagged commit)
+  - Versioned releases published to a private GitHub Release or internal artifact repository
+  - Defined update strategy: manual distribution, MDM/Intune push, or Store auto-update
+  - Maintained `CHANGELOG.md` with notes for each version
+</Accordion>
+
+<Accordion title="Testing and quality">
+  - Smoke test suite for the installer (install, launch, onboarding, Outlook sync, task creation, export, uninstall)
+  - Demo environment with **synthetic data only** — never use real company tasks, emails, or employee names for demonstrations
+  - Antivirus and application control compatibility verified on representative corporate hardware
+</Accordion>
+
+<Accordion title="Support and product">
+  - Defined support channel (email alias, Teams channel, or ticketing system)
+  - Documented common error resolutions: Outlook closed, profile not configured, antivirus blocking COM, PowerShell execution policy
+  - Commercial terms defined if selling to external customers: pricing model (per-user, per-area, per-installation), EULA, SLA
+  - Landing page or product sheet for external presentation
+</Accordion>
+
+## Recommended milestone: version 1.0 enterprise release
+
+The path from the current pilot to a version 1.0 ready for enterprise sale or wide deployment:
+
+1. Signed installer + completed release checklist
+2. Final privacy policy and EULA reviewed by legal
+3. Reproducible build pipeline (GitHub Actions or Azure DevOps)
+4. Demo prepared with synthetic data (not real company content)
+5. 2-week pilot with 5–10 users, tracking incidents and usability feedback
+6. Incident log reviewed and critical issues resolved before expanding rollout
+
+## Team rollout steps
+
+Use this procedure to deploy Cody to a team today using the NSIS installer:
+
+<Steps>
+  <Step title="Build the installer">
+    On a Windows machine with Node.js installed, run:
+
+    ```powershell
+    npm.cmd run package:win
+    ```
+
+    This produces `outputs/Cody Setup <version>.exe` and `outputs/Cody-<version>-portable.exe`, and copies both to the team work folder automatically.
+  </Step>
+
+  <Step title="Distribute the installer">
+    Share `outputs/Cody Setup <version>.exe` with each team member via the shared folder, email, or an internal file sharing system. Include a note that Windows may show a SmartScreen warning for unsigned installers — users should click "More info" → "Run anyway".
+  </Step>
+
+  <Step title="Each user installs and completes onboarding">
+    Each person runs the installer (no administrator account needed), chooses an installation directory, and agrees to the EULA. On first launch, Cody shows the onboarding screen: the user enters their name and picks a pet mascot. No pre-loaded tasks or personal data — the app starts clean for every user.
+  </Step>
+
+  <Step title="Sync Outlook Classic">
+    With Outlook Classic open and the corporate profile loaded, go to **Settings → "Sync Outlook and calendar"** in Cody. Cody reads emails and calendar entries from Outlook via local COM. Outlook must be open for sync to work.
+  </Step>
+
+  <Step title="(Optional) Configure Azure OpenAI for AI classification">
+    For improved email-to-task classification, go to **Settings → Artificial Intelligence** and enter:
+    - Azure OpenAI endpoint URL
+    - Deployment name
+    - API key
+
+    If these are not available or not approved yet, leave AI unconfigured — Cody's local classifier handles suggestions automatically.
+  </Step>
+</Steps>

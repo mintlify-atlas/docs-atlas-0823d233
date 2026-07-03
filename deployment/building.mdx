@@ -1,0 +1,224 @@
+---
+title: "Build and Package Cody for Windows Distribution"
+sidebarTitle: "Building"
+description: "Build Cody Assistant into an NSIS installer and portable executable using electron-builder. Covers versioning, the release checklist, and artifact locations."
+---
+
+Cody is packaged for Windows using [electron-builder](https://www.electron.build/), which produces two distribution artifacts from a single command: an NSIS per-user installer and a self-contained portable executable. This page walks through everything needed to produce a distributable build — from setting up the environment and bumping the version number, through running the build pipeline, to verifying the installer on a clean machine before sharing it with the team.
+
+## Prerequisites
+
+Before running any build commands, confirm the following are available on your Windows machine:
+
+<CardGroup cols={3}>
+  <Card title="Node.js" icon="node-js">
+    A Node.js version compatible with Electron 33. Run `node -v` to check. Install via the official Node.js installer or `winget install OpenJS.NodeJS`.
+  </Card>
+  <Card title="Windows" icon="windows">
+    Builds must run on Windows — electron-builder's NSIS and MSIX targets require Windows APIs and tooling that are not available on other platforms.
+  </Card>
+  <Card title="PowerShell" icon="terminal">
+    The `package:win` script invokes a PowerShell post-build step (`scripts/copy-release.ps1`) to copy artifacts to the team work folder. PowerShell 5.1+ (built into Windows) is sufficient.
+  </Card>
+</CardGroup>
+
+## Build commands
+
+All commands use `npm.cmd` (the correct Windows invocation of npm when called from PowerShell or a batch context):
+
+```powershell
+# Type-check only — runs tsc --noEmit without bundling
+npm.cmd run typecheck
+
+# Full build — type-check + electron-vite compile for main, preload, and renderer
+npm.cmd run build
+
+# Package into Windows installer + portable executable
+npm.cmd run package:win
+
+# Package MSIX for Microsoft Store submission
+npm.cmd run package:store
+```
+
+<Tip>
+  Run `npm.cmd run build` first to catch TypeScript errors before committing to the slower packaging step. The `package:win` script already calls `build` internally, but running it separately gives faster feedback during development.
+</Tip>
+
+### What each script does
+
+| Script | What it runs |
+|---|---|
+| `typecheck` | `tsc --noEmit` — type-checks all TypeScript without emitting files |
+| `build` | `tsc --noEmit && electron-vite build` — type-check then bundle main + preload + renderer |
+| `package:win` | `build` → `electron-builder --win` → `powershell … scripts/copy-release.ps1` |
+| `package:store` | `build` → `electron-builder --win appx` |
+
+## Output artifacts
+
+<Warning>
+  The `outputs/` directory is listed in `.gitignore`. Build artifacts are never committed to the repository and must be distributed manually (file share, GitHub Releases, or a CI pipeline). Never commit an installer or portable executable to source control.
+</Warning>
+
+After `npm.cmd run package:win` completes, two files appear in `outputs/`:
+
+```text
+outputs/
+  Cody Setup 0.11.0.exe      ← NSIS per-user installer
+  Cody-0.11.0-portable.exe   ← single-file portable executable
+```
+
+The `package:win` script also copies both files to the team work folder via the post-build PowerShell script:
+
+```text
+C:\Cálidda\07. Practicante\03. Proyectos\Coddy - Assistant\
+```
+
+This means colleagues can pick up the latest build from the shared folder without waiting for a manual copy.
+
+### Choosing between installer and portable
+
+<CardGroup cols={2}>
+  <Card title="NSIS Installer (Cody Setup …exe)" icon="box-archive">
+    Use for standard team rollout. Installs per-user — no admin rights needed. Creates a desktop shortcut and Start Menu entry. Does **not** delete user data on uninstall, so tasks and preferences survive a reinstall.
+  </Card>
+  <Card title="Portable (Cody-…-portable.exe)" icon="bolt">
+    Use for demos, quick validation, or testing on a machine before a full install. No installation step — just run the `.exe`. Ideal for smoke-testing a new build before distributing the installer.
+  </Card>
+</CardGroup>
+
+## NSIS installer configuration
+
+The NSIS target is configured in the `nsis` section of `package.json`. Key settings:
+
+```json
+"nsis": {
+  "artifactName": "Cody Setup ${version}.${ext}",
+  "license": "build/eula.txt",
+  "oneClick": false,
+  "perMachine": false,
+  "allowToChangeInstallationDirectory": true,
+  "createDesktopShortcut": true,
+  "createStartMenuShortcut": true,
+  "shortcutName": "Cody",
+  "deleteAppDataOnUninstall": false
+}
+```
+
+Notable behaviors:
+- **`oneClick: false`** — the installer shows a wizard with a license agreement screen (sourced from `build/eula.txt`) and a directory picker.
+- **`perMachine: false`** — installs into the current user's profile; no elevation prompt.
+- **`allowToChangeInstallationDirectory: true`** — the user can choose where Cody is installed.
+- **`deleteAppDataOnUninstall: false`** — uninstalling Cody does **not** delete tasks, settings, or any data under `%APPDATA%/cody-desktop-assistant/`. Users must manually delete that folder if they want a full wipe.
+
+## App identity
+
+The application is identified by these values in the `build` section of `package.json`:
+
+```json
+"build": {
+  "appId": "com.cody.assistant",
+  "productName": "Cody",
+  "copyright": "Copyright © 2026 Mariana Llanos"
+}
+```
+
+`appId` is used by Windows to associate the app with its installer entry, shortcuts, and notification toast registrations. Do not change it between versions without testing that upgrades work correctly.
+
+## Versioning
+
+Before packaging a new release, update the version string in **both** files:
+
+```json
+// package.json
+{
+  "version": "0.11.0"
+}
+```
+
+```json
+// package-lock.json  (first occurrence, at the top level)
+{
+  "version": "0.11.0"
+}
+```
+
+<Note>
+  Keeping both files in sync ensures that `npm ci` on a fresh clone produces the same version as the build environment. A mismatch causes electron-builder to embed a different version string in the installer than what `package.json` reports.
+</Note>
+
+## Release workflow
+
+Follow these steps every time a new installer is being prepared for distribution:
+
+<Steps>
+  <Step title="Verify a clean working tree">
+    Run `git status` and confirm there are no uncommitted code changes. Artifacts built from a dirty tree are not reproducible and cannot be traced to a specific commit.
+
+    ```powershell
+    git status
+    # Should output: nothing to commit, working tree clean
+    ```
+  </Step>
+
+  <Step title="Bump the version number">
+    Edit `version` in both `package.json` and `package-lock.json` to the new release version (e.g. `0.12.0`). Commit the change before building.
+  </Step>
+
+  <Step title="Run the build and confirm it passes">
+    ```powershell
+    npm.cmd run build
+    ```
+    Fix any TypeScript errors before continuing. A build that fails type-checking must not be packaged.
+  </Step>
+
+  <Step title="Audit the commit for sensitive files">
+    Confirm that none of the following are staged or present in the build output:
+    - `.env` files of any name
+    - API keys or credentials in any source file
+    - Files from `%APPDATA%/cody-desktop-assistant/`
+    - Screenshots containing real email content or personal information
+  </Step>
+
+  <Step title="Update documentation if behavior changed">
+    If this release changes how Cody handles data, network calls, or security controls, update `README.md`, `SECURITY.md`, and `PRIVACY.md` accordingly before tagging the release.
+  </Step>
+
+  <Step title="Package the installer and portable">
+    ```powershell
+    npm.cmd run package:win
+    ```
+    This runs the full build, packages both NSIS and portable targets, and copies both to the team work folder.
+  </Step>
+
+  <Step title="Test the installer on a clean machine">
+    Copy `outputs/Cody Setup <version>.exe` to a machine where Cody has never been installed. Run the installer, complete onboarding, open Outlook Classic, and confirm sync works. Do not skip this step — issues with ASAR packaging or missing resources only appear on clean machines.
+  </Step>
+
+  <Step title="Test the portable for demo use">
+    Run `outputs/Cody-<version>-portable.exe` directly (no install) and verify the main workflows: onboarding, mascot mode, task creation, and Outlook sync.
+  </Step>
+</Steps>
+
+## MSIX / Microsoft Store packaging
+
+For Store submission, additional identity values must be filled in under the `appx` section of `package.json` before running `package:store`. The placeholder values in the repository are:
+
+```json
+"appx": {
+  "applicationId": "CodyAssistant",
+  "identityName": "REEMPLAZAR.CodyAssistant",
+  "publisher": "CN=REEMPLAZAR-GUID-DE-PARTNER-CENTER",
+  "publisherDisplayName": "Mariana Llanos",
+  "displayName": "Cody Assistant",
+  "backgroundColor": "#2d332b",
+  "languages": ["es-PE", "es-ES"]
+}
+```
+
+Replace `identityName` and `publisher` with the exact values from Microsoft Partner Center before running:
+
+```powershell
+npm.cmd run package:store
+```
+
+See the [Enterprise deployment guide](/deployment/enterprise) for the full Store submission walkthrough including Partner Center account setup, COM automation considerations, and the `StartupTask` requirement for launch-at-startup under MSIX.

@@ -1,0 +1,135 @@
+{
+  "projectType": "saas",
+  "projectName": "Cody Assistant",
+  "projectDescription": "A Windows desktop assistant that combines a floating animated pet with a full task manager, Outlook Classic integration, AI-powered email triage, meeting management, and productivity features like Focus Mode, recurring tasks, and morning briefings.",
+  "theme": "almond",
+  "primaryColor": "#6B8E6B",
+  "lightColor": "#E8F0E8",
+  "darkColor": "#2D332B",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/pet",
+              "features/tasks",
+              "features/outlook-sync",
+              "features/meetings",
+              "features/focus-mode"
+            ]
+          },
+          {
+            "group": "Productivity",
+            "pages": [
+              "features/briefings",
+              "features/reminders",
+              "features/ai-classification",
+              "features/progress"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/settings",
+              "configuration/keyboard-shortcuts",
+              "configuration/export-backup"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/building",
+              "deployment/enterprise",
+              "deployment/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API & Types",
+            "pages": [
+              "reference/desktop-api",
+              "reference/data-types",
+              "reference/ipc-channels"
+            ]
+          },
+          {
+            "group": "Legal",
+            "pages": [
+              "reference/privacy",
+              "reference/eula"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Floating animated desktop pet (bunny, frog, panda, cow, cat, dog) that stays always-on-top",
+    "Full task manager with categories, subcategories, priority, owner, due dates, and recurrence",
+    "Outlook Classic integration via local COM automation — no Microsoft Graph or Azure AD required",
+    "AI-powered email triage (Azure OpenAI or OpenAI) with local fallback classifier",
+    "Meeting detection with Teams join links, conflict warnings, and staggered reminders",
+    "Focus Mode (25, 50, or 90 minutes) silencing all notifications except meetings",
+    "Morning briefing and end-of-day closing summary with text-to-speech",
+    "Global keyboard shortcuts: Win+Shift+C, Win+Shift+T, Win+Shift+S, Win+Shift+F",
+    "Automatic priority escalation: High at 3 days, Urgent at 24 hours, Overdue past due date",
+    "Progress view with 7-day completion chart, streak counter, and overload alert",
+    "Per-pet visual themes that change the entire UI palette and greeting scene",
+    "Day status traffic light: green / amber / red based on pending urgent items",
+    "CSV export, full JSON backup, and sensitive-data-free diagnostics export",
+    "Electron security hardening: sandbox, CSP, context isolation, validated IPC"
+  ],
+  "publicApiSurface": [
+    "window.desktop.loadData(): Promise<AppState | null>",
+    "window.desktop.saveData(data: AppState): Promise<boolean>",
+    "window.desktop.scheduleReminder(reminder: Reminder): Promise<boolean>",
+    "window.desktop.cancelReminder(id: string): Promise<boolean>",
+    "window.desktop.notify(title: string, body: string): Promise<boolean>",
+    "window.desktop.openExternal(url: string): Promise<boolean>",
+    "window.desktop.openAssistant(): Promise<boolean>",
+    "window.desktop.showPet(): Promise<boolean>",
+    "window.desktop.minimizeWindow(): Promise<boolean>",
+    "window.desktop.toggleMaximizeWindow(): Promise<boolean>",
+    "window.desktop.closeWindow(): Promise<boolean>",
+    "window.desktop.showPetMenu(): Promise<boolean>",
+    "window.desktop.startPetDrag() / movePetDrag() / endPetDrag(): Promise<boolean>",
+    "window.desktop.syncOutlookClassic(options?: { ai?: AiConfig }): Promise<OutlookSyncResult>",
+    "window.desktop.exportFile(defaultName: string, content: string): Promise<string | null>",
+    "window.desktop.exportDiagnostics(): Promise<string | null>",
+    "window.desktop.getAppVersion(): Promise<string>",
+    "window.desktop.setLaunchAtLogin(enabled: boolean): Promise<boolean>",
+    "window.desktop.setFocus(mode: FocusMode | null, minutes: number): Promise<boolean>",
+    "window.desktop.getFocus(): Promise<FocusState | null>",
+    "window.desktop.petUpdate(payload: PetUpdate): Promise<boolean>",
+    "window.desktop.onShortcut(callback: (action: string) => void): () => void",
+    "window.desktop.onFocusChanged(callback: (state: FocusState | null) => void): () => void",
+    "window.desktop.onPetUpdate(callback: (payload: PetUpdate) => void): () => void",
+    "Type: Task — id, title, detail, category, priority, dueAt, status, source, recurrence, owner",
+    "Type: Meeting — id, title, startsAt, endsAt, attendees, joinUrl, location, mode",
+    "Type: AppSettings — userName, reminderMinutes, autoSyncMinutes, petVariant, aiProvider, ...",
+    "Type: AppState — tasks, suggestions, categories, meetings, settings, dismissedSuggestionIds",
+    "Type: InboxSuggestion — extends Task (omits status), adds excerpt and needsReview",
+    "Type: FocusState — mode: 'focus' | 'dnd', until: string",
+    "Type: PetMood — 'calm' | 'alert' | 'worried' | 'happy'",
+    "Type: PetVariant — 'bunny' | 'froggo' | 'panda' | 'cow' | 'cat' | 'dog'",
+    "IPC channel: load-data, save-data, schedule-reminder, cancel-reminder",
+    "IPC channel: show-notification, open-external, open-assistant, show-pet",
+    "IPC channel: outlook-classic-sync, export-file, export-diagnostics",
+    "IPC channel: set-focus, get-focus, pet-update, shortcut (event)"
+  ]
+}

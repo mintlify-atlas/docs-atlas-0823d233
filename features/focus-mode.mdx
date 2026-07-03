@@ -1,0 +1,160 @@
+---
+title: "Focus Mode: Deep Work Without Distractions"
+sidebarTitle: "Focus Mode"
+description: "Activate Focus Mode for 25, 50, or 90 minutes — or Do Not Disturb indefinitely — to silence all notifications except meeting reminders. Cody reports how many were suppressed."
+---
+
+Focus Mode tells Cody to hold all non-critical notifications while you work. Instead of interrupting you with task reminders and email alerts, Cody keeps a count of everything it silenced. When your session ends, you get a single summary notification — so nothing is lost, but nothing disturbs your flow either.
+
+## Focus vs. Do Not Disturb
+
+Cody offers two focus modes with different notification behaviours:
+
+| | `focus` (timed) | `dnd` (Do Not Disturb) |
+|---|---|---|
+| **Duration** | 25, 50, or 90 minutes | Indefinite — runs until you cancel |
+| **Meeting reminders** | ✅ Still delivered | ❌ Suppressed (all notifications silenced) |
+| **Task reminders** | ❌ Suppressed | ❌ Suppressed |
+| **End behaviour** | Auto-expires; shows summary notification | Stays active until manually cancelled |
+| **Summary on end** | Shows suppressed count | No summary (you cancelled it deliberately) |
+
+```typescript
+export type FocusMode = 'focus' | 'dnd'
+
+export interface FocusState {
+  mode: FocusMode
+  until: string    // ISO 8601 timestamp — when the session expires
+}
+```
+
+---
+
+## Activating Focus Mode
+
+<Steps>
+  <Step title="From the assistant panel">
+    Open the assistant and click the **Focus Mode** button in the header or sidebar. Choose a duration (25, 50, or 90 minutes) or select **Do Not Disturb**.
+  </Step>
+  <Step title="From the pet context menu">
+    Right-click the floating pet to open the context menu. Three options are shown when Focus is inactive:
+
+    - **Focus Mode 25 min**
+    - **Focus Mode 50 min**
+    - **Do Not Disturb 60 min**
+
+    When a session is already active, the menu shows **Disable Focus Mode** instead.
+  </Step>
+  <Step title="Global keyboard shortcut">
+    Press **`Win+Shift+F`** from anywhere on your desktop. If no session is active, Cody starts a 25-minute `focus` session immediately. If a session is already running, it cancels it (without showing the suppression summary).
+  </Step>
+</Steps>
+
+---
+
+## How Suppression Works
+
+Every scheduled reminder (task alerts, Outlook suggestions, general notifications) passes through `scheduleReminder()` in the main process. When a reminder fires while a focus session is active, the function checks two conditions before showing the notification:
+
+```typescript
+if (focusState && Date.now() < focusState.until) {
+  const isMeeting = reminder.id.startsWith('meeting-')
+  if (focusState.mode === 'dnd' || !isMeeting) {
+    suppressedCount++
+    reminderTimers.delete(reminder.id)
+    return   // notification is silenced
+  }
+}
+```
+
+- In **`focus`** mode: reminders whose `id` starts with `meeting-` are still shown; everything else is silenced.
+- In **`dnd`** mode: all reminders are silenced, including meeting notifications.
+
+Each silenced notification increments `suppressedCount` in the main process. This counter resets when the session ends.
+
+---
+
+## End-of-Session Summary
+
+When a timed `focus` session expires naturally (the timer fires), Cody calls `endFocus(true)`. The main process sends a Windows native notification summarising the session:
+
+```typescript
+new Notification({
+  title: 'Modo Focus terminado',
+  body:
+    suppressed > 0
+      ? `Silencié ${suppressed} ${suppressed === 1 ? 'notificación' : 'notificaciones'} mientras estabas concentrada.`
+      : 'No te perdiste ninguna notificación. ¡Buen trabajo!'
+}).show()
+```
+
+If nothing was suppressed, Cody still sends a positive completion message so you know the session ended cleanly.
+
+Cancelling Focus Mode manually (via the context menu, the shortcut, or passing `null` to `setFocus`) calls `endFocus(false)` — the session ends silently with no summary notification.
+
+<Tip>
+  Use **Do Not Disturb** mode for long uninterrupted work blocks like writing reports, preparing presentations, or reviewing technical documents. Unlike timed Focus, DND does not auto-expire — it stays active until you consciously decide to re-enable notifications, giving you full control over when you return to reactive mode.
+</Tip>
+
+---
+
+## `window.desktop` API
+
+The renderer accesses Focus Mode through the `window.desktop` bridge defined in `electron/preload/index.ts`:
+
+```typescript
+// Start a 25-minute focus session
+await window.desktop.setFocus('focus', 25)
+
+// Start Do Not Disturb indefinitely (pass a large number, e.g. 480 minutes = 8 hours)
+await window.desktop.setFocus('dnd', 480)
+
+// Cancel Focus Mode (pass null as mode)
+await window.desktop.setFocus(null, 0)
+
+// Read the current state
+const state: FocusState | null = await window.desktop.getFocus()
+if (state) {
+  console.log(`Active: ${state.mode}, until: ${state.until}`)
+}
+
+// Subscribe to focus state changes (e.g. to update UI)
+const unsubscribe = window.desktop.onFocusChanged((state: FocusState | null) => {
+  if (state) {
+    console.log(`Focus started: ${state.mode} until ${state.until}`)
+  } else {
+    console.log('Focus ended')
+  }
+})
+
+// Call unsubscribe() to clean up the listener
+unsubscribe()
+```
+
+The `minutes` argument to `setFocus` is clamped between **1** and **480** (8 hours) in the main process.
+
+---
+
+## Focus State Persistence and IPC
+
+Focus state lives in the main process (`focusState` variable) and is never written to disk — it resets if Cody is restarted. When state changes (start, cancel, or natural expiry), the main process emits a `focus-changed` IPC event to the assistant window:
+
+```typescript
+function broadcastFocus(): void {
+  const payload = focusState
+    ? { mode: focusState.mode, until: new Date(focusState.until).toISOString() }
+    : null
+  assistantWindow?.webContents.send('focus-changed', payload)
+}
+```
+
+The renderer subscribes via `window.desktop.onFocusChanged(callback)` and updates the UI (button state, badge, timer countdown) in real time.
+
+---
+
+## Global Shortcut Reference
+
+| Shortcut | Behaviour when Focus is **inactive** | Behaviour when Focus is **active** |
+|---|---|---|
+| `Win+Shift+F` | Starts a 25-minute `focus` session | Cancels the current session (no summary) |
+
+For the context-menu shortcuts and the full shortcut list, see [Floating Pet](/features/pet).

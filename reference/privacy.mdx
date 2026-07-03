@@ -1,0 +1,129 @@
+---
+title: "Cody Assistant Privacy Policy and Data Practices"
+sidebarTitle: "Privacy"
+description: "Cody Assistant stores all data locally on the user's machine. No data is sent to Cody servers. The only optional outbound connection is the configured AI provider."
+---
+
+Cody Assistant is designed from the ground up as a local-first application. It runs entirely on the user's Windows machine and does not operate any cloud service, telemetry pipeline, or analytics backend. Every task, meeting, and preference you create in Cody stays on your own computer. The only optional outbound network connection is the call to an AI provider you explicitly configure — and even then, Cody is careful to send only the minimum necessary information.
+
+## What Data Cody Collects and Stores
+
+Cody stores the following categories of data, all of which live exclusively on the local machine:
+
+- **Tasks** — titles, categories, priorities, due dates, and assignees created by the user.
+- **Meetings** — calendar entries imported from a locally installed classic Outlook client via COM automation.
+- **Email-derived task suggestions** — when Cody scans recent emails in Outlook to suggest tasks, it reads the **email subject and sender name only**. The full email body is never read into Cody's data store.
+- **User preferences and settings** — pet variant, sync interval, reminder configuration, and (optionally) AI provider API keys.
+- **Configured name** — the name the user enters during setup for personalised greetings.
+
+<Note>
+  **The email body never leaves your machine.** When Cody reads Outlook emails to detect potential tasks, it processes the subject and sender locally. The full body of any email is never stored in `cody-data.json`, never passed to the AI provider, and never transmitted anywhere. This guarantee holds regardless of whether AI classification is enabled or disabled.
+</Note>
+
+## Where Data Lives
+
+All persistent data is written to the Electron `userData` directory on the local machine:
+
+```text
+%APPDATA%\cody-desktop-assistant\
+```
+
+The primary data file is:
+
+```text
+%APPDATA%\cody-desktop-assistant\cody-data.json
+```
+
+Cody uses atomic writes (write to a temporary file, then rename) and maintains a daily rolling backup in the same directory so that a corrupted primary file can be automatically recovered. The user can also export a JSON backup manually from the **Settings** screen at any time.
+
+<Info>
+  No part of Cody's data directory is synced to any Cody-operated server. The folder is local to the Windows user profile and subject to the same access controls as any other `%APPDATA%` directory on the machine.
+</Info>
+
+## Data Stored vs. Data Transmitted
+
+The table below summarises every category of data Cody touches, where it is stored, and whether it is ever sent externally.
+
+| Data type | Where stored | Sent externally? |
+|---|---|---|
+| User-created tasks (title, priority, due date) | `cody-data.json` — local only | ❌ Never |
+| Meetings imported from Outlook | `cody-data.json` — local only | ❌ Never |
+| Email subject + sender (task suggestion input) | Processed in memory; metadata in `cody-data.json` | ⚠️ Only to configured AI provider (optional) |
+| Email body content | Never stored | ❌ Never |
+| User preferences and settings | `cody-data.json` — local only | ❌ Never |
+| AI provider API keys | `%APPDATA%\cody-desktop-assistant\` — local only | ❌ Never transmitted to Cody |
+| Support diagnostics export | Generated on demand; includes counts and metadata only | ❌ Never (user shares manually if desired) |
+
+## Optional AI Classification
+
+AI-assisted task detection is entirely optional. If no API key is configured, Cody uses local keyword rules to identify potential tasks from email subjects — no network calls are made.
+
+When a user **does** configure an AI provider, Cody sends only:
+
+- The **email subject line**
+- The **sender name**
+
+Nothing else is included in the AI request payload. The email body, recipient list, attachments, and any other content remain on the local machine and are never transmitted.
+
+Cody supports two AI provider options:
+
+- **OpenAI** — requests go to OpenAI's API endpoint under OpenAI's data processing terms.
+- **Azure OpenAI** — requests go to the Azure OpenAI instance configured by the user (typically an endpoint within the organisation's own Microsoft tenant).
+
+<Tip>
+  **Enterprise recommendation:** Use Azure OpenAI with a corporate tenant endpoint. This keeps AI inference requests within your organisation's Microsoft environment, subject to your existing Azure data-residency and compliance controls, rather than flowing to a third-party endpoint.
+</Tip>
+
+## What Is Never Sent Anywhere
+
+The following data is **never** transmitted to any server — Cody's or otherwise:
+
+- Full email body content
+- Personal task details or notes
+- Company-specific data contained in tasks or meetings
+- API keys or any credential
+- The local `cody-data.json` file or any part of its contents
+
+## No Telemetry, Analytics, or Usage Tracking
+
+Cody does not include any telemetry SDK, crash reporter, analytics library, or usage-tracking mechanism. There are no background pings to Cody servers because **no Cody servers exist**. The application is purely local software.
+
+## API Key Storage
+
+If the user configures an AI provider, the API key is stored in:
+
+```text
+%APPDATA%\cody-desktop-assistant\
+```
+
+The key is stored only on the local machine. It is used exclusively to authenticate requests to the AI provider the user configured. It is never transmitted to any Cody-operated endpoint.
+
+## Support Diagnostics
+
+The diagnostics export available in **Settings** contains only technical metadata and aggregate counts (e.g., number of tasks, sync timestamps, application version). It does not include:
+
+- Email content or subjects
+- Task titles or details
+- Meeting content
+- API keys
+
+Users may choose to share this export manually when seeking support. It is never uploaded automatically.
+
+## Data Deletion
+
+To remove all data stored by Cody:
+
+1. Uninstall Cody Assistant via **Windows Settings → Apps** or the uninstaller.
+2. Manually delete the data directory:
+
+```text
+%APPDATA%\cody-desktop-assistant\
+```
+
+<Warning>
+  The Cody uninstaller does **not** automatically delete the `%APPDATA%\cody-desktop-assistant\` directory. This is intentional — it prevents accidental data loss on reinstall or upgrade. You must delete this folder manually if you want to remove all stored data from your machine. Consider exporting a backup from **Settings** before deletion if you may need your task history later.
+</Warning>
+
+## Summary
+
+Cody Assistant's privacy model rests on a single principle: your data belongs to you and stays on your machine. There are no accounts to create, no data sent to Cody, and no telemetry. The only optional outbound connection is the AI provider you choose to configure, and even then, only the minimum metadata needed for classification is transmitted.

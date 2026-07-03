@@ -1,0 +1,71 @@
+---
+title: "Morning Briefing and End-of-Day Summary"
+sidebarTitle: "Briefings"
+description: "Cody delivers a spoken morning briefing at a configurable hour and an end-of-day closing summary with one-click task postponement to tomorrow."
+---
+
+Cody bookends your workday with two automated briefings: a morning session that surfaces today's meetings and most important tasks, and a closing summary that tallies what you accomplished and offers a single click to push anything unfinished to tomorrow. Both are triggered once per day, tracked via the `lastMorningBriefing` and `lastClosingBriefing` fields in `AppState`, so they fire exactly once regardless of how many times Cody is restarted during the day.
+
+## Morning Briefing
+
+When Cody detects that the current hour has reached `briefingHour` (default **8**) and no morning briefing has been delivered yet today, it opens the briefing panel automatically. The briefing presents three pieces of information at a glance:
+
+- **Today's meetings** — pulled directly from your local Outlook calendar, showing title, time, and a "Join Teams" button if a Teams link was found.
+- **Top 3 tasks** — the three highest-priority pending tasks ranked by urgency and due date.
+- **Text-to-speech option** — a listen button reads the summary aloud using the Windows Speech Synthesis API, so you can catch up while settling into your desk.
+
+<Tip>
+  You can enable or disable both briefings at any time under **Settings → Briefings**. When `briefingsEnabled` is set to `false`, neither the morning nor the closing briefing will appear, regardless of the configured hours.
+</Tip>
+
+## End-of-Day (Closing) Briefing
+
+When the clock reaches `closingHour` (default **18**) and no closing briefing has been delivered today, Cody shows the end-of-day summary. It includes:
+
+- **Completed vs. pending tasks** — a count of everything you checked off today versus what is still open.
+- **Expiring tomorrow** — tasks whose `dueAt` falls on the next calendar day, so you know what to prioritize first thing in the morning.
+- **Postpone all to tomorrow** — a single button that updates the `dueAt` of every pending task from today to the same time tomorrow, removing end-of-day stress without manual rescheduling.
+
+## Briefing vs. Briefing: At a Glance
+
+| Feature | Morning Briefing | Closing Briefing |
+|---|---|---|
+| Default trigger hour | 8:00 AM (`briefingHour: 8`) | 6:00 PM (`closingHour: 18`) |
+| State key | `lastMorningBriefing` | `lastClosingBriefing` |
+| Shows meetings | ✅ Today's calendar events | ❌ |
+| Shows top tasks | ✅ 3 most important pending tasks | ✅ All pending tasks |
+| Shows what's due tomorrow | ❌ | ✅ |
+| Completion summary | ❌ | ✅ Completed vs. pending count |
+| Text-to-speech | ✅ Listen button | ❌ |
+| One-click postpone | ❌ | ✅ Postpone all to tomorrow |
+
+## Settings Reference
+
+Both briefings are controlled by the `AppSettings` interface. The relevant fields are:
+
+```typescript
+export interface AppSettings {
+  // ...other fields
+  briefingsEnabled?: boolean  // Toggle both briefings on or off. Default: true
+  briefingHour?: number       // Hour (0–23) to trigger the morning briefing. Default: 8
+  closingHour?: number        // Hour (0–23) to trigger the closing briefing. Default: 18
+}
+```
+
+<Note>
+  Briefing hours use the 24-hour clock and are compared against the local system time. Setting `briefingHour` to `9` means the morning briefing fires any time Cody is running between 9:00 and 9:59 AM if it has not already fired today.
+</Note>
+
+## How the Daily Trigger Works
+
+Cody checks the `lastMorningBriefing` and `lastClosingBriefing` date strings stored in `AppState` on each tick of its internal timer. A briefing fires when:
+
+1. `briefingsEnabled` is `true` (or absent, which defaults to enabled).
+2. The current local hour matches the configured hour.
+3. The stored last-run date does not match today's calendar date.
+
+After firing, the date is updated in `AppState` and persisted to `%APPDATA%/cody-desktop-assistant/cody-data.json`, preventing a second trigger for the rest of the day.
+
+<Accordion title="What if Cody starts after the briefing hour?">
+  If Cody is launched at 9:30 AM and `briefingHour` is 8, the morning briefing will not fire — the trigger hour has already passed. Cody evaluates the condition in real time; it does not deliver a missed briefing retroactively. The closing briefing at 6:00 PM will still fire normally that evening.
+</Accordion>

@@ -1,0 +1,133 @@
+---
+title: "Install Cody Assistant on Windows"
+sidebarTitle: "Installation"
+description: "Download and install Cody Assistant on Windows using the NSIS installer or portable executable. No administrator privileges required."
+---
+
+Cody Assistant runs exclusively on Windows and ships as two ready-to-use artifacts: an NSIS installer for permanent installation and a portable single executable for demos or quick evaluations. Both are produced from the same source build; choose whichever fits your workflow.
+
+## Requirements
+
+Before installing or building Cody, confirm that the following prerequisites are in place:
+
+- **Windows** — Cody is a Windows-only application. macOS and Linux are not supported.
+- **Outlook Classic** — The standard Microsoft Outlook desktop client (not the new Outlook app or the web version) must be installed and signed in with your corporate profile. The sync feature reads email and calendar data through COM automation from the locally running Outlook process.
+- **PowerShell** — Used internally by Cody to invoke the COM automation script. PowerShell is included in all supported versions of Windows and does not need to be installed separately.
+- **Node.js** *(build from source only)* — Any Node.js release that is compatible with Electron 33. This is only required if you are building Cody from the source repository; pre-built installers have no Node.js dependency at runtime.
+
+## Installing from a Release Build
+
+### NSIS Installer — `Cody Setup <version>.exe`
+
+The installer is the recommended delivery method for teams. Key characteristics:
+
+- **Per-user installation** — no administrator privileges required. The app installs under the current user's profile directory.
+- **Desktop and Start Menu shortcuts** — both are created automatically during setup under the name "Cody".
+- **EULA prompt** — the installer displays the end-user licence agreement before proceeding.
+- **Data is preserved on uninstall** — the `%APPDATA%/cody-desktop-assistant/` folder is intentionally left in place when you uninstall, so your tasks and preferences are not lost if you reinstall.
+- **Installer directory is configurable** — during setup you can change the target installation path.
+
+Run the installer, accept the licence, choose an installation directory if desired, and click Install. Cody will launch automatically on first run and present the onboarding screen.
+
+### Portable Executable — `Cody-<version>-portable.exe`
+
+The portable build is a single self-contained executable that requires no installation step. Double-click it to launch Cody directly. It is useful for:
+
+- Demos and quick evaluations on machines where you cannot or do not want to install software.
+- Testing a new version alongside an existing installed version before upgrading.
+- Running Cody from a USB drive or a shared network path.
+
+The portable build writes its data to the same `%APPDATA%/cody-desktop-assistant/` folder as the installer, so settings and tasks are shared between the two if you run them on the same machine.
+
+### Data Folder Location
+
+Regardless of which build you use, all user data lives in:
+
+```text
+%APPDATA%/cody-desktop-assistant/
+```
+
+This folder contains `cody-data.json` (active state), `cody-data.backup.json` (latest daily backup), and any exported CSV or JSON backups you generate from Settings. The folder is never touched by the installer or uninstaller beyond its creation.
+
+## Building from Source
+
+If you need to modify Cody, package a custom version, or contribute to the project, build it directly from the repository.
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Cody Assistant repository to your local machine and navigate into the project directory.
+
+    ```powershell
+    git clone https://github.com/miu-ll/Cody-assistant.git
+    cd Cody-assistant
+    ```
+  </Step>
+  <Step title="Install dependencies">
+    Install all Node.js dependencies. On Windows, use `npm.cmd` instead of bare `npm` to ensure the correct executable is resolved in PowerShell or Command Prompt.
+
+    ```powershell
+    npm.cmd install
+    ```
+
+    This installs React 18, Electron 33, electron-vite, electron-builder, TypeScript 5.7, and all other declared dependencies from `package.json`.
+  </Step>
+  <Step title="Run in development mode">
+    Start the electron-vite development server with hot-module replacement. Both the pet window and the assistant panel reload automatically when you save source files.
+
+    ```powershell
+    npm.cmd run dev
+    ```
+
+    The main process, preload scripts, and renderer are all watched simultaneously. Changes to `electron/main/index.ts` restart the Electron process; changes to `src/App.tsx` hot-reload the panel.
+  </Step>
+  <Step title="Build the Windows installer and portable executable">
+    Compile TypeScript, bundle all assets with electron-vite, and package the result with electron-builder. The `package:win` script also copies the finished artifacts to the configured release folder.
+
+    ```powershell
+    npm.cmd run package:win
+    ```
+
+    When the command finishes, two files are written to the `outputs/` directory:
+
+    ```text
+    outputs/Cody Setup 0.11.0.exe
+    outputs/Cody-0.11.0-portable.exe
+    ```
+
+    Replace `0.11.0` with the version string in `package.json` if you have bumped it. The `outputs/` directory is git-ignored; it is safe to delete and regenerate at any time.
+  </Step>
+</Steps>
+
+The full sequence from a fresh clone looks like this:
+
+```powershell
+# Install dependencies
+npm.cmd install
+
+# Start development server (optional — skip if you only want a production build)
+npm.cmd run dev
+
+# Build Windows installer and portable
+npm.cmd run package:win
+```
+
+## Windows SmartScreen Warning
+
+<Warning>
+  Cody's installer and portable executable are currently **unsigned**. Windows SmartScreen will display a blue warning dialog reading "Windows protected your PC" when you run either artifact. This is expected behaviour for any unsigned `.exe` on a modern Windows installation.
+
+  To proceed past the warning, click **"More info"** on the SmartScreen dialog, then click **"Run anyway"**. This is safe for builds you have compiled yourself or received directly from a trusted team member.
+
+  On Windows 11 machines with **Smart App Control** enabled, unsigned executables may be blocked entirely with no "Run anyway" option. In that case, Smart App Control must be disabled in Windows Security settings before the app can be launched.
+
+  The definitive fix for production distribution is **code-signing the installer with a certificate issued by your organisation's IT department**. A valid Authenticode certificate eliminates the SmartScreen warning for all users on your corporate network.
+</Warning>
+
+## First Launch
+
+The very first time Cody starts — whether from the installer, the portable build, or the development server — it detects that onboarding is incomplete (`settings.onboarded = false`) and shows a welcome screen. On this screen you:
+
+1. **Enter your name.** Cody uses your name in greetings throughout the day (good morning, good afternoon, good evening) and in the morning briefing.
+2. **Choose your pet variant.** Pick from bunny, froggo, panda, cow, cat, or dog. Your choice applies a matching visual theme to the entire assistant panel. You can change it later in Settings.
+
+After completing onboarding, the pet window appears on your desktop and Cody is ready to use. No personal data from this step is stored in the repository or sent anywhere — it is written only to `%APPDATA%/cody-desktop-assistant/cody-data.json` on your machine.

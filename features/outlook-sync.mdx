@@ -1,0 +1,196 @@
+---
+title: "Sync Outlook Classic via Local COM Automation"
+sidebarTitle: "Outlook Sync"
+description: "Cody reads up to 40 recent emails and 14 days of calendar events from Outlook Classic using PowerShell COM automation — no Microsoft Graph or Azure AD credentials required."
+---
+
+Cody connects to your corporate mailbox without any cloud credentials. Instead of going through Microsoft Graph, Azure AD, Client IDs, or Key Vaults, it spawns a local PowerShell process that creates a COM object bound to the Outlook Classic instance already running on your machine. All data stays on your computer — nothing is transmitted to Cody's servers, and the only optional outbound connection is to an AI provider if you configure one.
+
+<Note>
+  All Outlook data read by Cody is processed 100% locally. No email content, calendar events, or account names are sent to any Cody-owned server. The only optional network call is the AI classification request, which sends **only the email subject and sender** — never the body.
+</Note>
+
+---
+
+## How It Works
+
+<Steps>
+  <Step title="Electron spawns PowerShell">
+    `electron/main/index.ts` handles the `outlook-classic-sync` IPC channel by importing `electron/main/outlook.ts` and calling `syncOutlookClassic()`. That function builds a PowerShell script, Base64-encodes it as UTF-16LE, and passes it via `-EncodedCommand` to avoid shell-escaping issues.
+
+    ```typescript
+    const encoded = Buffer.from(outlookScript, 'utf16le').toString('base64')
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+      { timeout: 90_000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }
+    )
+    ```
+  </Step>
+  <Step title="PowerShell creates a COM object">
+    The script opens an `Outlook.Application` COM object using the already-running Outlook instance and reads the default MAPI namespace.
+
+    ```powershell
+    $outlook   = New-Object -ComObject Outlook.Application
+    $namespace = $outlook.GetNamespace('MAPI')
+    $inbox     = $namespace.GetDefaultFolder(6)   # 6 = Inbox
+    $calendar  = $namespace.GetDefaultFolder(9)   # 9 = Calendar
+    ```
+  </Step>
+  <Step title="Reads emails from the Inbox">
+    Items are sorted by `ReceivedTime` descending. Cody reads up to **40** of the most recent messages, extracting subject, sender name, body preview (≤ 700 characters), received timestamp, and unread flag.
+
+    ```powershell
+    $mailItems.Sort('[ReceivedTime]', $true)
+    $limit = [Math]::Min(40, $mailItems.Count)
+
+    for ($index = 1; $index -le $limit; $index++) {
+      $item = $mailItems.Item($index)
+      if ($null -eq $item -or $item.Class -ne 43) { continue }
+      $body = [string]$item.Body
+      if ($body.Length -gt 700) { $body = $body.Substring(0, 700) }
+      # ... build message object
+    }
+    ```
+  </Step>
+  <Step title="Reads calendar events for the next 14 days">
+    Calendar items with recurrence expansion enabled are scanned. Cody collects up to **50** events starting from now through the next 14 days, extracting subject, start/end times, attendees, location, and any Teams join URL found in the event body.
+
+    ```powershell
+    $calendarItems.IncludeRecurrences = $true
+    $calendarItems.Sort('[Start]')
+    $now   = Get-Date
+    $until = $now.AddDays(14)
+
+    foreach ($item in $calendarItems) {
+      if ($checked -ge 500 -or $meetings.Count -ge 50) { break }
+      $start = [DateTime]$item.Start
+      if ($start -lt $now -or $start -gt $until) { continue }
+      # extract Teams URL from body...
+    }
+    ```
+  </Step>
+  <Step title="Teams URL extraction">
+    Cody uses a regex to find the Teams join link inside each calendar event body:
+
+    ```powershell
+    $match = [regex]::Match($body, 'https://teams\.microsoft\.com/[^\s<>"'']+')
+    if ($match.Success) { $joinUrl = $match.Value }
+    ```
+  </Step>
+  <Step title="TypeScript processes and returns results">
+    The PowerShell script outputs a single compressed JSON object. `syncOutlookClassic()` parses it, optionally calls the AI classifier (subject + sender only), runs the local regex taxonomy classifier as a fallback, and returns an `OutlookSyncResult`.
+  </Step>
+</Steps>
+
+---
+
+## `OutlookSyncResult` Interface
+
+```typescript
+export interface OutlookSyncResult {
+  accountName: string           // MAPI CurrentUser.Name
+  suggestions: InboxSuggestion[] // actionable tasks detected from emails
+  meetings: Meeting[]           // calendar events for the next 14 days
+  categories: string[]          // distinct categories found in suggestions
+  syncedAt: string              // ISO 8601 timestamp of the sync
+}
+```
+
+`InboxSuggestion` extends `Task` (omitting `status`) and adds:
+
+```typescript
+export interface InboxSuggestion extends Omit<Task, 'status'> {
+  excerpt: string       // body preview up to 320 characters
+  needsReview?: boolean // true when the category is 'Por clasificar'
+}
+```
+
+---
+
+## AI-Assisted Classification (Optional)
+
+When an AI provider is configured in **Settings → Artificial Intelligence**, Cody sends the list of email subjects and sender names to the configured provider and asks it to decide which messages imply an actionable task, suggest a title, category, priority, and estimated due date.
+
+<Warning>
+  For privacy, only the email **subject** and **sender name** are sent to the AI. The email body is never transmitted. Body content is used only by the local regex classifier which runs entirely on your machine.
+</Warning>
+
+Two providers are supported:
+
+| Provider | Data residency | Recommended for corporate use |
+|---|---|---|
+| **Azure OpenAI** | Your corporate Azure tenant — Microsoft does not use data to train models | ✅ Yes |
+| **OpenAI** | OpenAI infrastructure | Review your organisation's data policy |
+
+If no AI provider is configured, Cody falls back to the built-in local regex classifier with an action-verb pattern and the `wordData.ts` taxonomy.
+
+---
+
+## Auto-Sync
+
+Cody can synchronise with Outlook in the background on a configurable schedule. You can set the interval in **Settings → Sync interval**:
+
+| Interval | Description |
+|---|---|
+| 5 minutes | Frequent; ideal for high-volume inboxes |
+| 10 minutes | Default balance of freshness and performance |
+| 30 minutes | Light polling; suitable for quieter days |
+
+After each sync, the sidebar shows a **"Last synced X minutes ago"** timestamp derived from the `syncedAt` field in the stored `AppState`.
+
+---
+
+## Dismissed Suggestions
+
+Suggestions you dismiss are stored in `AppState.dismissedSuggestionIds`. On every subsequent sync, any email whose Outlook entry ID already appears in that list is silently filtered out and never shown again — even if the email remains unread in your inbox.
+
+---
+
+## Triggering a Sync
+
+There are three ways to start a sync:
+
+<CardGroup cols={3}>
+  <Card title="Auto-sync" icon="clock">
+    Runs automatically in the background at the configured interval (5, 10, or 30 minutes).
+  </Card>
+  <Card title="Settings button" icon="gear">
+    Click **"Sync Outlook and calendar"** in Settings to force an immediate sync.
+  </Card>
+  <Card title="Win+Shift+S" icon="keyboard">
+    Global shortcut that triggers a sync from anywhere on the desktop, even when the assistant panel is closed.
+  </Card>
+</CardGroup>
+
+The `window.desktop` API call used by the renderer:
+
+```typescript
+window.desktop.syncOutlookClassic(options?: { ai?: AiConfig }): Promise<OutlookSyncResult>
+```
+
+---
+
+## Requirements and Limitations
+
+<Warning>
+  **Outlook Classic must be open and have your corporate profile loaded** before starting a sync. If Outlook is not running, the COM object creation fails and Cody shows a controlled error message — the application does not crash. Corporate antivirus or endpoint protection software may block PowerShell's COM access; consult your IT team if sync consistently fails.
+</Warning>
+
+- Requires **Outlook Classic** (the MSI/C2R desktop app). Outlook on the web and the new Outlook app do not expose a local COM interface.
+- The sync runs with `powershell.exe -ExecutionPolicy Bypass` and `-STA` (single-threaded apartment) for COM compatibility. The PowerShell window is hidden (`windowsHide: true`).
+- A single sync times out after **90 seconds** if Outlook is unresponsive.
+- The raw output is capped at **10 MB** to prevent runaway data transfers.
+- COM object references are explicitly released in a `finally` block to avoid memory leaks in the Outlook process.
+
+---
+
+## Data Storage
+
+All synced data is stored locally at:
+
+```text
+%APPDATA%\cody-desktop-assistant\cody-data.json
+```
+
+A daily automatic backup is written to `cody-data.backup.json` in the same directory. If the primary file is corrupt on startup, Cody automatically falls back to the backup.
